@@ -1,17 +1,20 @@
--- BON Blox Fruits Auto Farm (v4)
+-- BON Blox Fruits Auto Farm (v5)
 -- Sua theo phan hoi test cua Bon:
--- 1) Het vong "nhan quest roi bo quest": script nho quest minh da nhan, co quest roi la
---    khong huy/nhan lai nua; chi huy 1 lan khi quest dang active khong dung bai dang farm.
--- 2) Auto stat nhanh: thay co diem la do het vao stat da chon (cong 1 lan nhieu diem),
---    kiem tra lien tuc ca trong luc danh quai.
--- 3) Fly giu lien tuc: fly chay bang 1 luong rieng theo tung khung hinh, khoa quai la
---    giu bay khong nha nhip cho den khi quai chet/bien mat.
--- 4) Gom quai: chon 1 con quai trong nhiem vu, bay toi con do roi moi gom bay xung quanh.
--- 5) UI nhe cho dien thoai: gon, co nut thu nho.
--- 6) Auto Aura (Buso Haki): tu mua khi du 25.000 Beli (remote BuyHaki/Buso), tu bat bang
---    remote "Buso" khi nhan vat chua co HasBuso (kiem tra dinh ky, chong bat-tat lien tuc).
--- Ke thua tu v3: bang toa do dao/bai quai ca 3 sea (Sea 1 sau Update 30), fast attack bang
--- remote RegisterAttack/RegisterHit, buff hitbox 55, gom quai 2-5 con kieu cong dong.
+-- 1) Bring quai khong con tinh chieu cao cua player: quai duoc keo toi gan player nhung
+--    giu nguyen cao do mat dat cua no (dang dung tren khong thi ke). Chi bring 1 lan;
+--    con nao di qua xa tam danh (>70 studs tinh theo chieu ngang) moi bring rieng con do lai.
+-- 2) He thong check nhiem vu rieng: doc ca tieu de + mo ta + tien do (da danh x/y con)
+--    tren GUI quest cua game, doi chieu voi level hien tai:
+--    - Chua co quest -> nhan quest dung level (cho GUI quest xuat hien moi tinh la xong,
+--      khong ban StartQuest lien tuc).
+--    - Co quest dung level -> giu nguyen, khong huy/nhan lai.
+--    - Len level moi ma van cam quest cu -> huy cu, nhan moi ngay, roi bay toi bai quai.
+--    - Quest mat do hoan thanh (hoac du x/y con) -> nhan lai quest moi.
+--    Kiem tra quai xong quest phai on dinh ~0.9s moi nha khoa muc tieu.
+-- 3) Chong 2 ban script chay song song (Bon chay lai loadstring): ban moi se tat ban cu
+--    va xoa GUI cu, tranh viec 2 ben tranh nhau nhan quest.
+-- Ke thua tu v4: auto stat do het diem 1 lan, fly luong rieng lien tuc khong nha nhip,
+-- auto Aura (Buso), UI nhe co thu nho, fast attack remote + bang toa do 3 sea tu v3.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -29,6 +32,13 @@ end
 local IS_SEA1 = game.PlaceId == 2753915549
 
 local Module = {}
+
+-- Chong chay 2 ban script song song: ban moi chay se tat vong lap cua ban cu
+_G.BON_BF_SESSION = (_G.BON_BF_SESSION or 0) + 1
+local mySession = _G.BON_BF_SESSION
+local function sessionAlive()
+    return _G.BON_BF_SESSION == mySession
+end
 
 -- ===== Cai dat =====
 local Settings = {
@@ -176,16 +186,37 @@ local function getQuestForLevel(lv)
     return best
 end
 
--- Quest dang active tren GUI game (nil = chua co quest)
-local function currentQuestText()
+-- Doc GUI quest cua game: co dang active khong, tieu de, mo ta, tien do (da danh/can)
+local function readQuestGui()
     local gui = Player:FindFirstChild("PlayerGui")
     local main = gui and gui:FindFirstChild("Main")
     local quest = main and main:FindFirstChild("Quest")
-    if not quest or not quest.Visible then return nil end
-    local titleObj = quest:FindFirstChild("Container") and quest.Container:FindFirstChild("QuestTitle")
-        and quest.Container.QuestTitle:FindFirstChild("Title")
-    if titleObj and titleObj.Text ~= "" then return titleObj.Text end
-    return nil
+    if not quest or not quest.Visible then
+        return false, "", "", nil, nil
+    end
+    local title, desc = "", ""
+    local container = quest:FindFirstChild("Container")
+    if container then
+        local qt = container:FindFirstChild("QuestTitle")
+        local tl = qt and qt:FindFirstChild("Title")
+        if tl then title = tl.Text or "" end
+        local qd = container:FindFirstChild("QuestDescription")
+        local dl = qd and (qd:FindFirstChild("Description") or qd:FindFirstChild("Title"))
+        if dl then desc = dl.Text or "" end
+    end
+    local killed, needed = nil, nil
+    local both = desc .. " " .. title
+    local k, n = string.match(both, "%[(%d+)/(%d+)%]")
+    if not k then
+        k, n = string.match(both, "(%d+)%s*/%s*(%d+)")
+    end
+    if k then killed, needed = tonumber(k), tonumber(n) end
+    return true, title, desc, killed, needed
+end
+
+local function questActive()
+    local active = readQuestGui()
+    return active
 end
 
 local function questMatchesMob(text, mobName)
@@ -234,7 +265,7 @@ local function flyStep(goalPos, dt)
 end
 
 task.spawn(function()
-    while true do
+    while sessionAlive() do
         local dt = RunService.Heartbeat:Wait()
         if Settings.Farm then
             local _, hum, hrp = getChar()
@@ -254,7 +285,7 @@ local function flyGoalTo(pos, timeout, arriveDist)
     Flight.goal = pos
     arriveDist = arriveDist or 6
     local t0 = tick()
-    while Settings.Farm and (tick() - t0) < (timeout or 30) do
+    while Settings.Farm and sessionAlive() and (tick() - t0) < (timeout or 30) do
         local _, _, hrp = getChar()
         if not hrp then return false end
         if (pos - hrp.Position).Magnitude <= arriveDist then return true end
@@ -429,16 +460,36 @@ local function collectMobs(mobName, hrp, includeEnemy)
     return list
 end
 
--- Giu bam quai o diem gom duoi chan minh (goi moi tick danh)
-local function holdMobs(list, gatherPos)
-    for _, item in ipairs(list) do
-        pcall(function() item.root.AssemblyLinearVelocity = Vector3.zero end)
-        item.root.CanCollide = false
-        local flat = Vector3.new(gatherPos.X - item.root.Position.X, 0, gatherPos.Z - item.root.Position.Z)
-        if flat.Magnitude > 1 then
-            item.root.CFrame = CFrame.new(gatherPos, gatherPos + flat)
-        else
-            item.root.CFrame = CFrame.new(gatherPos)
+-- Bring quai: chi bring 1 lan, giu nguyen cao do cua quai (khong tinh chieu cao player).
+-- Con nao di qua xa tam danh theo chieu ngang moi bring rieng con do lai.
+local broughtMobs = setmetatable({}, { __mode = "k" })
+
+local function bringMobTo(item, hrp, slot)
+    local offX = math.sin(slot * 2.3) * 4
+    local offZ = math.cos(slot * 2.3) * 4
+    local dest = Vector3.new(hrp.Position.X + offX, item.root.Position.Y, hrp.Position.Z + offZ)
+    pcall(function() item.root.AssemblyLinearVelocity = Vector3.zero end)
+    item.root.CanCollide = false
+    local look = Vector3.new(hrp.Position.X, item.root.Position.Y, hrp.Position.Z)
+    if (look - dest).Magnitude > 0.5 then
+        item.root.CFrame = CFrame.new(dest, look)
+    else
+        item.root.CFrame = CFrame.new(dest)
+    end
+    broughtMobs[item.model] = true
+end
+
+local function bringPass(list, lockedEnemy, hrp)
+    for i, item in ipairs(list) do
+        if item.model ~= lockedEnemy then
+            if not broughtMobs[item.model] then
+                bringMobTo(item, hrp, i)
+            else
+                local flat = Vector3.new(item.root.Position.X - hrp.Position.X, 0, item.root.Position.Z - hrp.Position.Z)
+                if flat.Magnitude > 70 then
+                    bringMobTo(item, hrp, i)
+                end
+            end
         end
     end
 end
@@ -457,49 +508,67 @@ local function freezeMobs(list)
     end
 end
 
--- ===== Nhiem vu: nhan 1 lan, khong huy-nhan lap lai =====
+-- ===== Nhiem vu: he thong check level + quest + tien do =====
 -- QuestState.mob = con quai cua quest ma script da nhan thanh cong; tin no, khong do lai.
 local QuestState = { mob = nil }
 
+-- Cho GUI quest xuat hien (toi da ~seconds giay), tranh ban StartQuest lien tuc
+local function waitQuestActive(seconds)
+    local t0 = tick()
+    while tick() - t0 < seconds do
+        if questActive() then return true end
+        task.wait(0.25)
+    end
+    return questActive()
+end
+
+-- Chi nhan khi that su chua co quest; thanh cong = GUI quest da xuat hien
 local function acceptQuest(q)
     local first = q[4]
     local second = first == 1 and 2 or 1
-    for _, idx in ipairs({ first, second }) do
+    for i, idx in ipairs({ first, second }) do
+        if i > 1 then
+            task.wait(0.5)
+            if questActive() then
+                q[4] = first
+                return true
+            end
+        end
         pcall(function() CommF:InvokeServer("StartQuest", q[3], idx) end)
-        task.wait(0.7)
-        if currentQuestText() then
-            q[4] = idx -- tu sua chi so dung cho lan sau
+        if waitQuestActive(2) then
+            q[4] = idx
             return true
         end
     end
-    return false
+    return questActive()
 end
 
 local function ensureQuest()
     local q = getQuestForLevel(Level.Value)
-    local mobName = q[2]
-    local text = currentQuestText()
+    local targetMob = q[2]
+    local active, title, desc = readQuestGui()
 
-    if text then
-        -- Da co quest: dung bai thi giu nguyen, khong huy/nhan lai
-        if questMatchesMob(text, mobName) or QuestState.mob == mobName then
-            QuestState.mob = mobName
+    if active then
+        -- Quest dang active co phai cua dung level hien tai khong?
+        local combined = title .. " " .. desc
+        if questMatchesMob(combined, targetMob) or QuestState.mob == targetMob then
+            QuestState.mob = targetMob
             return q
         end
-        -- Quest dang active la cua bai khac -> huy dung 1 lan
-        setStatus("Huy quest cu...")
+        -- Len level moi / quest la cua bai khac -> doi quest ngay, khong nhan lai quest cu
+        setStatus("Doi quest theo level " .. tostring(Level.Value) .. "...")
         pcall(function() CommF:InvokeServer("AbandonQuest") end)
         QuestState.mob = nil
         task.wait(0.6)
-        text = currentQuestText()
+        active = questActive()
     end
 
-    if not text then
+    if not active then
         -- Bay toi dao: Sea 1 dung toa do bai quai (sau rework), Sea 2/3 dung toa do NPC
         local anchor = IS_SEA1 and V(q[7]) or V(q[6])
         local _, _, hrp = getChar()
         if hrp and (anchor - hrp.Position).Magnitude > 60 then
-            setStatus("Bay toi dao nhan quest (" .. mobName .. ")...")
+            setStatus("Bay toi dao nhan quest (" .. targetMob .. ")...")
             flyToSmart(anchor + Vector3.new(0, 10, 0), 90)
         end
         -- Neu thay NPC trong workspace thi bay lai gan NPC
@@ -510,12 +579,14 @@ local function ensureQuest()
                 flyGoalTo(giverPos + Vector3.new(0, 5, 0), 10, 15)
             end
         end
-        -- Nhan quest: chi nhan khi that su chua co quest, khong huy ben trong
-        setStatus("Nhan quest: " .. mobName)
+        -- Nhan quest dung level, xong bay thang ra bai quai danh
+        setStatus("Nhan quest: " .. targetMob)
         if acceptQuest(q) then
-            QuestState.mob = mobName
+            QuestState.mob = targetMob
+        elseif questActive() then
+            QuestState.mob = targetMob
         else
-            setStatus("Chua nhan duoc quest, van farm quai: " .. mobName)
+            setStatus("Chua nhan duoc quest, van farm quai: " .. targetMob)
             task.wait(0.5)
         end
     end
@@ -525,10 +596,10 @@ end
 -- ===== Danh 1 con quai: khoa muc tieu, gom bay, fast attack =====
 local function fightMob(enemy, mobName)
     local tool = equipMelee()
-    local hadQuest = currentQuestText() ~= nil
+    local hadQuest = questActive()
     local atkAcc, slowAcc = 0, 0
     local nilStreak = 0
-    while Settings.Farm do
+    while Settings.Farm and sessionAlive() do
         local dt = task.wait(0.05)
         local eHum = enemy:FindFirstChildOfClass("Humanoid")
         local eRoot = enemy:FindFirstChild("HumanoidRootPart")
@@ -539,12 +610,10 @@ local function fightMob(enemy, mobName)
         -- Khoa muc tieu: luong fly bam sat tren dau con quai nay den khi no chet/bien mat
         Flight.goal = eRoot.Position + Vector3.new(0, Settings.HoverHeight, 0)
 
-        -- Gom quai (toi da BringMax con) ve duoi chan minh va giu chat
+        -- Gom quai (toi da BringMax con): bring 1 lan toi gan player, giu cao do mat dat
         local mobs = { { model = enemy, hum = eHum, root = eRoot, dist = 0 } }
         if Settings.BringMobs then
             mobs = collectMobs(mobName, hrp, enemy)
-            local gatherPos = hrp.Position + Vector3.new(0, -Settings.HoverHeight + 3, 0)
-            holdMobs(mobs, gatherPos)
         end
 
         atkAcc = atkAcc + dt
@@ -555,12 +624,21 @@ local function fightMob(enemy, mobName)
             buffHitbox()
             spendStats()
             maintainAura()
-            if Settings.BringMobs then freezeMobs(mobs) end
-            -- Xong quest (tieu de quest bien mat on dinh ~1s) -> nha khoa, ve nhan quest moi
-            if currentQuestText() then
+            if Settings.BringMobs then
+                bringPass(mobs, enemy, hrp)
+                freezeMobs(mobs)
+            end
+            -- Kiem tra tien do + xong quest: doc GUI quest cua game
+            local activeNow, _, _, killed, needed = readQuestGui()
+            if activeNow then
                 nilStreak = 0
+                if killed and needed then
+                    setStatus("Dang danh: " .. mobName .. " (" .. tostring(killed) .. "/" .. tostring(needed) .. ")")
+                    if hadQuest and killed >= needed then break end
+                end
             else
                 nilStreak = nilStreak + 1
+                -- Quest bien mat on dinh ~0.9s = da hoan thanh -> nha khoa, nhan quest moi
                 if hadQuest and nilStreak >= 3 then break end
             end
         end
@@ -599,7 +677,7 @@ end
 -- ===== Vong lap farm chinh =====
 local function farmLoop()
     claimSimulation()
-    while Settings.Farm do
+    while Settings.Farm and sessionAlive() do
         local ok, err = pcall(function()
             local char, hum, hrp = getChar()
             if not char or not hum or not hrp or hum.Health <= 0 then
@@ -686,7 +764,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -70, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v4"
+    title.Text = "BON - Blox Fruits v5"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -873,6 +951,9 @@ local function buildGui()
     end)
 
     local parentGui = (gethui and gethui()) or Player:WaitForChild("PlayerGui")
+    -- Xoa GUI cua ban script cu (neu Bon vua chay lai loadstring)
+    local oldGui = parentGui:FindFirstChild("BON_BloxFruits")
+    if oldGui then oldGui:Destroy() end
     gui.Parent = parentGui
     return gui
 end
@@ -880,7 +961,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v4. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v5. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -893,6 +974,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v4). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v5). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
