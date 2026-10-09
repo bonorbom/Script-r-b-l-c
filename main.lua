@@ -27,6 +27,7 @@ end
 -- Danh sach script: on = true/false de bat tat
 local SCRIPTS = {
     { name = "Example", path = "scripts/example.lua", on = true },
+    { name = "BloxFruits", path = "scripts/bloxfruits.lua", on = true },
 }
 
 for _, s in ipairs(SCRIPTS) do
