@@ -1,5 +1,10 @@
--- BON Blox Fruits Auto Farm (v5)
--- Sua theo phan hoi test cua Bon:
+-- BON Blox Fruits Auto Farm (v6)
+-- v6: hoc logic auto-quest chuan tu code autofarm cong khai (Sankeurr 10/2026, Opensurs, GGEZ):
+-- nhan quest chi khi GUI quest cua game dang tat (chua co quest) va da bay toi gan NPC;
+-- quest sai level thi huy roi doi tick sau moi nhan; chi danh quai trung KHOP ten voi quai
+-- trong nhiem vu (ten quai trong workspace la ten tran, so sanh bang nhau tuyet doi,
+-- het viec "Pirate" bat nham "Galley Pirate"); xong quest = GUI quest bien mat.
+-- Sua theo phan hoi test cua Bon (v5):
 -- 1) Bring quai khong con tinh chieu cao cua player: quai duoc keo toi gan player nhung
 --    giu nguyen cao do mat dat cua no (dang dung tren khong thi ke). Chi bring 1 lan;
 --    con nao di qua xa tam danh (>70 studs tinh theo chieu ngang) moi bring rieng con do lai.
@@ -315,7 +320,7 @@ local function findEnemy(mobName)
     for _, e in ipairs(enemies:GetChildren()) do
         local hum = e:FindFirstChildOfClass("Humanoid")
         local root = e:FindFirstChild("HumanoidRootPart")
-        if hum and root and hum.Health > 0 and string.find(e.Name, mobName, 1, true) then
+        if hum and root and hum.Health > 0 and string.lower(e.Name) == string.lower(mobName) then
             local d = hrp and (root.Position - hrp.Position).Magnitude or 0
             if d < bestDist then best, bestDist = e, d end
         end
@@ -438,7 +443,7 @@ local function collectMobs(mobName, hrp, includeEnemy)
         for _, e in ipairs(enemies:GetChildren()) do
             local h = e:FindFirstChildOfClass("Humanoid")
             local r = e:FindFirstChild("HumanoidRootPart")
-            if h and r and h.Health > 0 and string.find(e.Name, mobName, 1, true) then
+            if h and r and h.Health > 0 and string.lower(e.Name) == string.lower(mobName) then
                 local d = (r.Position - hrp.Position).Magnitude
                 if d <= Settings.BringRadius then
                     table.insert(list, { model = e, hum = h, root = r, dist = d })
@@ -524,6 +529,7 @@ end
 
 -- Chi nhan khi that su chua co quest; thanh cong = GUI quest da xuat hien
 local function acceptQuest(q)
+    if questActive() then return true end
     local first = q[4]
     local second = first == 1 and 2 or 1
     for i, idx in ipairs({ first, second }) do
@@ -555,12 +561,12 @@ local function ensureQuest()
             QuestState.mob = targetMob
             return q
         end
-        -- Len level moi / quest la cua bai khac -> doi quest ngay, khong nhan lai quest cu
+        -- Len level moi / quest la cua bai khac -> huy, tick sau moi nhan quest moi (1 hanh dong/tick)
         setStatus("Doi quest theo level " .. tostring(Level.Value) .. "...")
         pcall(function() CommF:InvokeServer("AbandonQuest") end)
         QuestState.mob = nil
-        task.wait(0.6)
-        active = questActive()
+        task.wait(1)
+        return q
     end
 
     if not active then
@@ -638,8 +644,8 @@ local function fightMob(enemy, mobName)
                 end
             else
                 nilStreak = nilStreak + 1
-                -- Quest bien mat on dinh ~0.9s = da hoan thanh -> nha khoa, nhan quest moi
-                if hadQuest and nilStreak >= 3 then break end
+                -- Quest bien mat (doc lai 2 lan ~0.6s cho chac) = hoan thanh -> nha khoa, nhan quest moi
+                if hadQuest and nilStreak >= 2 then break end
             end
         end
 
@@ -764,7 +770,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -70, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v5"
+    title.Text = "BON - Blox Fruits v6"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -961,7 +967,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v5. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v6. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -974,6 +980,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v5). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v6). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
