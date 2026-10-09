@@ -1,7 +1,11 @@
--- BON Blox Fruits Auto Farm
--- Tu nhan quest theo level, bay toi mob, gom mob, hover danh, tu cong stat, anti AFK.
--- GUI nho gon cho dien thoai. Du lieu quest/mob theo wiki Blox Fruits (Update 30).
--- Luu y: Sea 1 vua rework nen script KHONG hardcode toa do - tu quet NPC/mob trong workspace.
+-- BON Blox Fruits Auto Farm (v2)
+-- Theo yeu cau cua Bon:
+-- 1) Nhan quest: bay toi cho NPC giao quest roi moi nhan, xong tim mob theo quest.
+-- 2) Khong teleport: chi fly muot toi quai, toc do fly chinh 100-350; tracking giu lock
+--    1 con quai den khi no chet hoac xong quest/nhan quest moi moi nha.
+-- 3) Auto click "ghi de": farm dang bat la script tu click lien tuc, Bon bam gi cung ke.
+-- Du lieu quest/mob theo wiki Blox Fruits (Update 30). Khong hardcode toa do dao:
+-- tu quet NPC/mob trong workspace nen Sea 1 rework cung khong lech bai.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,21 +23,21 @@ end
 
 local Module = {}
 
--- ===== Cai dat (co the sua truoc khi chay, hoac doi qua GUI) =====
+-- ===== Cai dat =====
 local Settings = {
     Farm = false,          -- bat/tat auto farm
     BringMob = true,       -- gom mob ve gan minh
     AutoStat = false,      -- tu cong diem stat
-    StatName = "Melee",    -- stat duoc cong: Melee / Defense / Sword / Gun / Demon Fruit
-    TweenSpeed = 200,      -- toc do bay (studs/giay)
+    StatName = "Melee",    -- Melee / Defense / Sword / Gun / Demon Fruit
+    FlySpeed = 200,        -- toc do bay 100-350 (chinh bang nut -/+ tren GUI)
     HoverHeight = 25,      -- do cao dung tren dau mob
     BringRadius = 60,      -- ban kinh gom mob
-    AttackRate = 0.12,     -- giay giua moi lan danh
+    AttackRate = 0.12,     -- giay giua moi lan click
 }
 Module.Settings = Settings
 
 -- ===== Du lieu quest: Level, Mob, QuestId, ChiSo, NPC giao quest =====
--- Bo qua quest boss (farm mob thuong cho nhanh). QuestId la ten remote StartQuest cua game.
+-- Bo qua quest boss. QuestId la ten remote StartQuest cua game.
 local QUESTS = {
     -- Sea 1
     {0, "Bandit", "BanditQuest1", 1, "Bandit Quest Giver"},
@@ -152,8 +156,8 @@ local function getQuestForLevel(lv)
     return best
 end
 
--- Trang thai quest hien tai qua GUI cua game
-local function currentQuestMob()
+-- Quest dang active tren GUI game (tra ve tieu de quest, nil = chua co quest)
+local function currentQuestText()
     local gui = Player:FindFirstChild("PlayerGui")
     local main = gui and gui:FindFirstChild("Main")
     local quest = main and main:FindFirstChild("Quest")
@@ -164,6 +168,12 @@ local function currentQuestMob()
     return ""
 end
 
+local function questMatchesMob(text, mobName)
+    if not text then return false end
+    local needle = string.lower((string.gsub(mobName, "s$", "")))
+    return string.find(string.lower(text), needle, 1, true) ~= nil
+end
+
 local statusText = "San sang"
 local function setStatus(s)
     statusText = s
@@ -172,21 +182,35 @@ local function setStatus(s)
     end
 end
 
--- ===== Di chuyen =====
-local function tweenTo(targetPos)
+-- ===== Fly muot (khong teleport) =====
+-- Di chuyen 1 buoc ve phia goal theo toc do FlySpeed; tra ve true neu da toi noi.
+local function flyStep(goalPos, dt)
     local _, _, hrp = getChar()
-    if not hrp then return end
-    local deadline = tick() + 30
-    while Settings.Farm and tick() < deadline do
-        local _, _, root = getChar()
-        if not root then return end
-        local delta = targetPos - root.Position
-        local dist = delta.Magnitude
-        if dist < 6 then break end
-        local step = math.min(dist, Settings.TweenSpeed * (1 / 30))
-        root.CFrame = CFrame.new(root.Position + delta.Unit * step, root.Position + delta)
-        task.wait(1 / 30)
+    if not hrp then return true end
+    local delta = goalPos - hrp.Position
+    local dist = delta.Magnitude
+    if dist <= 4 then return true end
+    local step = math.min(dist, Settings.FlySpeed * dt)
+    local newPos = hrp.Position + delta.Unit * step
+    pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+    local flat = Vector3.new(goalPos.X - newPos.X, 0, goalPos.Z - newPos.Z)
+    if flat.Magnitude > 1 then
+        hrp.CFrame = CFrame.new(newPos, newPos + flat)
+    else
+        hrp.CFrame = CFrame.new(newPos) * (hrp.CFrame - hrp.CFrame.Position)
     end
+    return false
+end
+
+-- Bay muot toi 1 diem co dinh, dung khi Farm tat hoac het timeout (giay)
+local function flyTo(goalPos, timeout)
+    local t0 = tick()
+    while Settings.Farm and (tick() - t0) < (timeout or 25) do
+        if flyStep(goalPos, RunService.Heartbeat:Wait()) then
+            return true
+        end
+    end
+    return false
 end
 
 local function findEnemy(mobName)
@@ -238,6 +262,84 @@ local function equipMelee()
     return fallback
 end
 
+-- ===== Nhan quest: bay toi cho NPC truoc =====
+local function ensureQuest()
+    local q = getQuestForLevel(Level.Value)
+    local mobName = q[2]
+    local cur = currentQuestText()
+    if questMatchesMob(cur, mobName) then
+        return q
+    end
+    if cur then
+        setStatus("Huy quest cu...")
+        pcall(function() CommF:InvokeServer("AbandonQuest") end)
+        task.wait(0.6)
+    end
+    -- Bay toi cho nhan nhiem vu (neu thay NPC trong workspace)
+    local giverPos = findGiverPos(q[5])
+    if giverPos then
+        setStatus("Bay toi cho nhan quest (" .. mobName .. ")...")
+        flyTo(giverPos + Vector3.new(0, 6, 0), 25)
+    else
+        setStatus("Chua thay NPC, nhan quest tu xa: " .. mobName)
+    end
+    pcall(function() CommF:InvokeServer("StartQuest", q[3], q[4]) end)
+    task.wait(0.6)
+    return q
+end
+
+-- ===== Danh 1 con quai: fly tracking + auto click ghi de =====
+-- Giu lock con nay den khi: no chet, quest xong, minh chet, hoac tat Farm.
+local function fightMob(enemy, mobName)
+    local tool = equipMelee()
+    local hadQuest = currentQuestText() ~= nil
+    local clickAcc, questAcc = 0, 0
+    while Settings.Farm do
+        local dt = RunService.Heartbeat:Wait()
+        local eHum = enemy:FindFirstChildOfClass("Humanoid")
+        local eRoot = enemy:FindFirstChild("HumanoidRootPart")
+        local char, hum, hrp = getChar()
+        if not eHum or not eRoot or eHum.Health <= 0 or not enemy.Parent then break end
+        if not char or not hum or not hrp or hum.Health <= 0 then break end
+
+        -- Fly tracking: bam sat tren dau quai, khong nha giua chung
+        flyStep(eRoot.Position + Vector3.new(0, Settings.HoverHeight, 0), dt)
+
+        clickAcc = clickAcc + dt
+        if clickAcc >= Settings.AttackRate then
+            clickAcc = 0
+            -- Gom mob cung loai o gan ve duoi chan minh
+            if Settings.BringMob then
+                local enemies = workspace:FindFirstChild("Enemies")
+                if enemies then
+                    for _, e in ipairs(enemies:GetChildren()) do
+                        local h = e:FindFirstChildOfClass("Humanoid")
+                        local r = e:FindFirstChild("HumanoidRootPart")
+                        if h and r and h.Health > 0 and string.find(e.Name, mobName, 1, true) then
+                            if (r.Position - hrp.Position).Magnitude <= Settings.BringRadius then
+                                r.CFrame = CFrame.new(hrp.Position + Vector3.new(0, -Settings.HoverHeight + 3, 0))
+                                r.CanCollide = false
+                            end
+                        end
+                    end
+                end
+            end
+            -- Auto click ghi de: cu click lien tuc, Bon co bam gi khac cung khong dung
+            if tool and tool.Parent ~= char then tool = nil end
+            if not tool then tool = equipMelee() end
+            if tool then pcall(function() tool:Activate() end) end
+            if mouse1click then pcall(mouse1click) end
+        end
+
+        -- Kiem tra quest xong (moi ~0.3s): xong la nha lock, ve nhan quest moi
+        questAcc = questAcc + dt
+        if questAcc >= 0.3 then
+            questAcc = 0
+            if hadQuest and currentQuestText() == nil then break end
+        end
+    end
+end
+
 -- ===== Vong lap farm chinh =====
 local function farmLoop()
     while Settings.Farm do
@@ -249,76 +351,28 @@ local function farmLoop()
                 return
             end
 
-            local q = getQuestForLevel(Level.Value)
-            local mobName = q[2]
-
-            -- Kiem tra quest dang active co dung mob khong
-            local cur = currentQuestMob()
-            local hasRightQuest = cur and string.find(string.lower(cur), string.lower(string.gsub(mobName, "s$", "")), 1, true)
-            if not cur then
-                setStatus("Nhan quest: " .. mobName)
-                CommF:InvokeServer("StartQuest", q[3], q[4])
-                task.wait(0.5)
-            elseif not hasRightQuest then
-                setStatus("Huy quest cu, nhan quest moi...")
-                CommF:InvokeServer("AbandonQuest")
-                task.wait(0.5)
-                CommF:InvokeServer("StartQuest", q[3], q[4])
-                task.wait(0.5)
-            end
+            local q = ensureQuest()
+            if not Settings.Farm then return end
 
             -- Tu cong stat
             if Settings.AutoStat then
                 local points = Data:FindFirstChild("Points")
                 if points and points.Value > 0 then
-                    CommF:InvokeServer("AddPoint", Settings.StatName, 1)
+                    pcall(function() CommF:InvokeServer("AddPoint", Settings.StatName, 1) end)
                 end
             end
 
-            local enemy = findEnemy(mobName)
+            local enemy = findEnemy(q[2])
             if not enemy then
-                setStatus("Tim bai " .. mobName .. "...")
+                setStatus("Tim bai " .. q[2] .. "...")
                 local giverPos = findGiverPos(q[5])
-                if giverPos then tweenTo(giverPos + Vector3.new(0, 8, 0)) end
-                task.wait(1)
+                if giverPos then flyTo(giverPos + Vector3.new(0, 8, 0), 10) end
+                task.wait(0.7)
                 return
             end
 
-            -- Bay toi tren dau mob va danh
-            setStatus("Dang danh: " .. mobName)
-            local tool = equipMelee()
-            while Settings.Farm and enemy and enemy.Parent do
-                local eHum = enemy:FindFirstChildOfClass("Humanoid")
-                local eRoot = enemy:FindFirstChild("HumanoidRootPart")
-                local _, _, root = getChar()
-                if not eHum or not eRoot or eHum.Health <= 0 or not root then break end
-
-                root.CFrame = CFrame.new(eRoot.Position + Vector3.new(0, Settings.HoverHeight, 0), eRoot.Position)
-
-                -- Gom cac mob cung loai o gan ve duoi chan minh
-                if Settings.BringMob then
-                    local enemies = workspace:FindFirstChild("Enemies")
-                    if enemies then
-                        for _, e in ipairs(enemies:GetChildren()) do
-                            local h = e:FindFirstChildOfClass("Humanoid")
-                            local r = e:FindFirstChild("HumanoidRootPart")
-                            if h and r and h.Health > 0 and string.find(e.Name, mobName, 1, true) then
-                                if (r.Position - root.Position).Magnitude <= Settings.BringRadius then
-                                    r.CFrame = CFrame.new(root.Position + Vector3.new(0, -Settings.HoverHeight + 3, 0))
-                                    r.CanCollide = false
-                                end
-                            end
-                        end
-                    end
-                end
-
-                if tool then
-                    tool:Activate()
-                else
-                    tool = equipMelee()
-                end
-                task.wait(Settings.AttackRate)
-            end
+            setStatus("Dang danh: " .. q[2])
+            fightMob(enemy, q[2])
         end)
         if not ok then
             setStatus("Loi nhe, thu lai: " .. tostring(err))
@@ -354,7 +408,7 @@ local function buildGui()
     gui.ResetOnSpawn = false
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 240, 0, 252)
+    frame.Size = UDim2.new(0, 240, 0, 302)
     frame.Position = UDim2.new(0, 10, 0, 90)
     frame.BackgroundColor3 = Color3.fromRGB(24, 26, 32)
     frame.BorderSizePixel = 0
@@ -369,7 +423,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -40, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits"
+    title.Text = "BON - Blox Fruits v2"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 14
@@ -444,6 +498,49 @@ local function buildGui()
         statBtn.Text = "Stat: " .. Settings.StatName .. " (cham de doi)"
     end)
 
+    -- Toc do bay: nut - / + (100-350)
+    local speedLabel = Instance.new("TextLabel")
+    speedLabel.Size = UDim2.new(0, 96, 0, 36)
+    speedLabel.Position = UDim2.new(0, 10, 0, 234)
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.Text = "Toc do bay"
+    speedLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    speedLabel.Font = Enum.Font.Gotham
+    speedLabel.TextSize = 13
+    speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    speedLabel.Parent = frame
+
+    local speedValue = Instance.new("TextLabel")
+    speedValue.Size = UDim2.new(0, 44, 0, 36)
+    speedValue.Position = UDim2.new(0, 148, 0, 234)
+    speedValue.BackgroundTransparency = 1
+    speedValue.Text = "200"
+    speedValue.TextColor3 = Color3.fromRGB(103, 232, 249)
+    speedValue.Font = Enum.Font.GothamBold
+    speedValue.TextSize = 14
+    speedValue.Parent = frame
+
+    local function speedBtn(x, txt, delta)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, 36, 0, 36)
+        b.Position = UDim2.new(0, x, 0, 234)
+        b.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
+        b.Text = txt
+        b.TextColor3 = Color3.fromRGB(230, 230, 230)
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 16
+        b.Parent = frame
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 6)
+        c.Parent = b
+        b.MouseButton1Click:Connect(function()
+            Settings.FlySpeed = math.clamp(Settings.FlySpeed + delta, 100, 350)
+            speedValue.Text = tostring(Settings.FlySpeed)
+        end)
+    end
+    speedBtn(110, "-", -25)
+    speedBtn(196, "+", 25)
+
     local status = Instance.new("TextLabel")
     status.Size = UDim2.new(1, -20, 0, 26)
     status.Position = UDim2.new(0, 10, 1, -30)
@@ -485,7 +582,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v2. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -497,6 +594,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang. Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v2). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
