@@ -1,9 +1,10 @@
--- BON Blox Fruits Auto Farm (v6)
--- v6: hoc logic auto-quest chuan tu code autofarm cong khai (Sankeurr 10/2026, Opensurs, GGEZ):
--- nhan quest chi khi GUI quest cua game dang tat (chua co quest) va da bay toi gan NPC;
--- quest sai level thi huy roi doi tick sau moi nhan; chi danh quai trung KHOP ten voi quai
--- trong nhiem vu (ten quai trong workspace la ten tran, so sanh bang nhau tuyet doi,
--- het viec "Pirate" bat nham "Galley Pirate"); xong quest = GUI quest bien mat.
+-- BON Blox Fruits Auto Farm (v7)
+-- v7: port nguyen flow auto-quest cua Sankeurr (open source moi nhat 10/2026):
+-- script TU DEM so quai da giet (quai dung ten bien mat khoi workspace = +1 kill),
+-- chi ban StartQuest dung 2 luc: doi quest (len level) hoac dem du quota 8 con.
+-- Khong doc GUI quest de quyet dinh, khong AbandonQuest, khong nhan lai lien tuc
+-- -> diet tan goc vong lap nhan-huy quest. GUI quest chi lam "phanh an toan" phu:
+-- dang danh ma GUI quest tat thi ngung som. Ban kinh quet/gom quai nang len 200.
 -- Sua theo phan hoi test cua Bon (v5):
 -- 1) Bring quai khong con tinh chieu cao cua player: quai duoc keo toi gan player nhung
 --    giu nguyen cao do mat dat cua no (dang dung tren khong thi ke). Chi bring 1 lan;
@@ -55,7 +56,7 @@ local Settings = {
     AutoAura = false,      -- tu bat Aura (Buso Haki)
     FlySpeed = 200,        -- toc do bay 100-350 (nut -/+ tren GUI)
     HoverHeight = 25,      -- do cao dung tren dau quai
-    BringRadius = 100,     -- ban kinh gom quai
+    BringRadius = 200,     -- ban kinh quet/gom quai (Bon yeu cau 200)
     AttackRate = 0.1,      -- giay giua moi don danh
     AttackRange = 55,      -- hitbox buff (tam danh)
 }
@@ -222,12 +223,6 @@ end
 local function questActive()
     local active = readQuestGui()
     return active
-end
-
-local function questMatchesMob(text, mobName)
-    if not text then return false end
-    local needle = string.lower((string.gsub(mobName, "s$", "")))
-    return string.find(string.lower(text), needle, 1, true) ~= nil
 end
 
 local statusText = "San sang"
@@ -513,71 +508,52 @@ local function freezeMobs(list)
     end
 end
 
--- ===== Nhiem vu: he thong check level + quest + tien do =====
--- QuestState.mob = con quai cua quest ma script da nhan thanh cong; tin no, khong do lai.
-local QuestState = { mob = nil }
+-- ===== Auto-quest port theo Sankeurr (10/2026): tu dem kill, khong doc GUI de quyet dinh =====
+local KILL_QUOTA = 8 -- so quai can giet moi vong quest (mac dinh chuan cong dong)
 
--- Cho GUI quest xuat hien (toi da ~seconds giay), tranh ban StartQuest lien tuc
-local function waitQuestActive(seconds)
-    local t0 = tick()
-    while tick() - t0 < seconds do
-        if questActive() then return true end
-        task.wait(0.25)
-    end
-    return questActive()
+local QuestFlow = {
+    key = nil,   -- "QuestId|ChiSo|Mob" cua quest dang chay
+    kills = 0,   -- so quai da giet trong vong quest nay (script tu dem)
+    alive = {},  -- tap quai dung ten dang song o tick truoc
+}
+
+local function questKey(q)
+    return q[3] .. "|" .. tostring(q[4]) .. "|" .. q[2]
 end
 
--- Chi nhan khi that su chua co quest; thanh cong = GUI quest da xuat hien
-local function acceptQuest(q)
-    if questActive() then return true end
-    local first = q[4]
-    local second = first == 1 and 2 or 1
-    for i, idx in ipairs({ first, second }) do
-        if i > 1 then
-            task.wait(0.5)
-            if questActive() then
-                q[4] = first
-                return true
+-- Dem kill: quai dung ten (khop 100%) bien mat khoi tap dang song = +1 kill
+local function trackKills(mobName)
+    local enemies = workspace:FindFirstChild("Enemies")
+    local now = {}
+    if enemies then
+        for _, e in ipairs(enemies:GetChildren()) do
+            local h = e:FindFirstChildOfClass("Humanoid")
+            if h and h.Health > 0 and string.lower(e.Name) == string.lower(mobName) then
+                now[e] = true
             end
         end
-        pcall(function() CommF:InvokeServer("StartQuest", q[3], idx) end)
-        if waitQuestActive(2) then
-            q[4] = idx
-            return true
+    end
+    for e in pairs(QuestFlow.alive) do
+        if not now[e] then
+            QuestFlow.kills = QuestFlow.kills + 1
         end
     end
-    return questActive()
+    QuestFlow.alive = now
 end
 
 local function ensureQuest()
     local q = getQuestForLevel(Level.Value)
-    local targetMob = q[2]
-    local active, title, desc = readQuestGui()
+    local key = questKey(q)
 
-    if active then
-        -- Quest dang active co phai cua dung level hien tai khong?
-        local combined = title .. " " .. desc
-        if questMatchesMob(combined, targetMob) or QuestState.mob == targetMob then
-            QuestState.mob = targetMob
-            return q
-        end
-        -- Len level moi / quest la cua bai khac -> huy, tick sau moi nhan quest moi (1 hanh dong/tick)
-        setStatus("Doi quest theo level " .. tostring(Level.Value) .. "...")
-        pcall(function() CommF:InvokeServer("AbandonQuest") end)
-        QuestState.mob = nil
-        task.wait(1)
-        return q
-    end
-
-    if not active then
-        -- Bay toi dao: Sea 1 dung toa do bai quai (sau rework), Sea 2/3 dung toa do NPC
+    if key ~= QuestFlow.key then
+        -- Quest moi (len level / moi bat farm): bay toi dao roi moi StartQuest.
+        -- Khong can AbandonQuest: nhan quest moi la server tu de len quest cu.
         local anchor = IS_SEA1 and V(q[7]) or V(q[6])
         local _, _, hrp = getChar()
         if hrp and (anchor - hrp.Position).Magnitude > 60 then
-            setStatus("Bay toi dao nhan quest (" .. targetMob .. ")...")
+            setStatus("Bay toi dao nhan quest (" .. q[2] .. ")...")
             flyToSmart(anchor + Vector3.new(0, 10, 0), 90)
         end
-        -- Neu thay NPC trong workspace thi bay lai gan NPC
         local giverPos = findGiverPos(q[5])
         if giverPos then
             local _, _, root = getChar()
@@ -585,16 +561,21 @@ local function ensureQuest()
                 flyGoalTo(giverPos + Vector3.new(0, 5, 0), 10, 15)
             end
         end
-        -- Nhan quest dung level, xong bay thang ra bai quai danh
-        setStatus("Nhan quest: " .. targetMob)
-        if acceptQuest(q) then
-            QuestState.mob = targetMob
-        elseif questActive() then
-            QuestState.mob = targetMob
-        else
-            setStatus("Chua nhan duoc quest, van farm quai: " .. targetMob)
-            task.wait(0.5)
-        end
+        setStatus("Nhan quest: " .. q[2])
+        pcall(function() CommF:InvokeServer("StartQuest", q[3], q[4]) end)
+        QuestFlow.key = key
+        QuestFlow.kills = 0
+        QuestFlow.alive = {}
+        trackKills(q[2]) -- chot tap quai dang song lam moc dem
+        task.wait(0.5)
+    elseif QuestFlow.kills >= KILL_QUOTA then
+        -- Du quota: nhan lai quest ngay tai cho, khong bay ve NPC, khong huy
+        setStatus("Nhan lai quest: " .. q[2])
+        pcall(function() CommF:InvokeServer("StartQuest", q[3], q[4]) end)
+        QuestFlow.kills = 0
+        QuestFlow.alive = {}
+        trackKills(q[2])
+        task.wait(0.5)
     end
     return q
 end
@@ -634,18 +615,22 @@ local function fightMob(enemy, mobName)
                 bringPass(mobs, enemy, hrp)
                 freezeMobs(mobs)
             end
-            -- Kiem tra tien do + xong quest: doc GUI quest cua game
+            -- Tu dem kill theo dung ten quai (chuan Sankeurr)
+            trackKills(mobName)
+            if QuestFlow.key and QuestFlow.kills >= KILL_QUOTA then break end
+            -- Phanh an toan (muon cua GGEZ): GUI quest tat giua tran = game da tra xong quest
             local activeNow, _, _, killed, needed = readQuestGui()
             if activeNow then
                 nilStreak = 0
                 if killed and needed then
                     setStatus("Dang danh: " .. mobName .. " (" .. tostring(killed) .. "/" .. tostring(needed) .. ")")
-                    if hadQuest and killed >= needed then break end
                 end
             else
                 nilStreak = nilStreak + 1
-                -- Quest bien mat (doc lai 2 lan ~0.6s cho chac) = hoan thanh -> nha khoa, nhan quest moi
-                if hadQuest and nilStreak >= 2 then break end
+                if hadQuest and nilStreak >= 2 then
+                    QuestFlow.kills = KILL_QUOTA -- ep vong sau nhan lai quest ngay
+                    break
+                end
             end
         end
 
@@ -770,7 +755,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -70, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v6"
+    title.Text = "BON - Blox Fruits v7"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -967,7 +952,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v6. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v7. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -980,6 +965,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v6). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v7). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
