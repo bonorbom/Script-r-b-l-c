@@ -1,4 +1,8 @@
--- BON Blox Fruits Auto Farm (v7)
+-- BON Blox Fruits Auto Farm (v8)
+-- v8 (gom quai theo dung y Bon): gom den du so luong thi dung, khong gom them trong
+-- cung 1 tran; da bring la NHA RA cho game tu tinh vat ly (bo han viec khoa WalkSpeed/
+-- ghim quai moi tick); chi khi quai chay qua xa tam danh (>70 studs ngang) moi bring
+-- rieng con do lai; va CHI bring khi con dang danh dung la quai cua quest hien tai.
 -- v7: port nguyen flow auto-quest cua Sankeurr (open source moi nhat 10/2026):
 -- script TU DEM so quai da giet (quai dung ten bien mat khoi workspace = +1 kill),
 -- chi ban StartQuest dung 2 luc: doi quest (len level) hoac dem du quota 8 con.
@@ -479,32 +483,21 @@ local function bringMobTo(item, hrp, slot)
     broughtMobs[item.model] = true
 end
 
-local function bringPass(list, lockedEnemy, hrp)
+-- Gom theo dung y Bon: du so luong thi dung gom trong tran do; da bring la nha ra
+-- cho game tu tinh vat ly; chi bring lai rieng con nao chay qua xa tam danh.
+local function bringPass(list, lockedEnemy, hrp, fightState)
     for i, item in ipairs(list) do
         if item.model ~= lockedEnemy then
-            if not broughtMobs[item.model] then
-                bringMobTo(item, hrp, i)
-            else
+            if broughtMobs[item.model] then
                 local flat = Vector3.new(item.root.Position.X - hrp.Position.X, 0, item.root.Position.Z - hrp.Position.Z)
                 if flat.Magnitude > 70 then
                     bringMobTo(item, hrp, i)
                 end
+            elseif fightState.count < Settings.BringMax then
+                bringMobTo(item, hrp, i)
+                fightState.count = fightState.count + 1
             end
         end
-    end
-end
-
--- Khoa "do di chuyen" cua quai (goi dinh ky): dung chan, tat animation di bo
-local function freezeMobs(list)
-    for _, item in ipairs(list) do
-        pcall(function()
-            item.hum.WalkSpeed = 0
-            item.hum.JumpPower = 0
-            local anim = item.hum:FindFirstChildOfClass("Animator")
-            if anim then anim:Destroy() end
-            item.hum:ChangeState(Enum.HumanoidStateType.StrafingNoPhysics)
-            item.hum:ChangeState(Enum.HumanoidStateType.PlatformStanding)
-        end)
     end
 end
 
@@ -586,6 +579,7 @@ local function fightMob(enemy, mobName)
     local hadQuest = questActive()
     local atkAcc, slowAcc = 0, 0
     local nilStreak = 0
+    local fightState = { count = 0 } -- so quai da bring trong tran nay (du la dung gom)
     while Settings.Farm and sessionAlive() do
         local dt = task.wait(0.05)
         local eHum = enemy:FindFirstChildOfClass("Humanoid")
@@ -611,12 +605,14 @@ local function fightMob(enemy, mobName)
             buffHitbox()
             spendStats()
             maintainAura()
-            if Settings.BringMobs then
-                bringPass(mobs, enemy, hrp)
-                freezeMobs(mobs)
+            -- Chi bring khi con dang danh dung la quai cua quest hien tai
+            if Settings.BringMobs and getQuestForLevel(Level.Value)[2] == mobName then
+                bringPass(mobs, enemy, hrp, fightState)
             end
             -- Tu dem kill theo dung ten quai (chuan Sankeurr)
             trackKills(mobName)
+            -- Len level moi giua tran: nha khoa de doi quest moi ngay
+            if QuestFlow.key and questKey(getQuestForLevel(Level.Value)) ~= QuestFlow.key then break end
             if QuestFlow.key and QuestFlow.kills >= KILL_QUOTA then break end
             -- Phanh an toan (muon cua GGEZ): GUI quest tat giua tran = game da tra xong quest
             local activeNow, _, _, killed, needed = readQuestGui()
@@ -755,7 +751,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -70, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v7"
+    title.Text = "BON - Blox Fruits v8"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -952,7 +948,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v7. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v8. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -965,6 +961,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v7). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v8). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
