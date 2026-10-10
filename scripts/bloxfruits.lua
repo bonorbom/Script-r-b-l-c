@@ -1,4 +1,6 @@
--- BON Blox Fruits Auto Farm (v9)
+-- BON Blox Fruits Auto Farm (v10)
+-- v10: doi GUI sang Rayfield; sua equipMelee chi cong nhan dung ToolTip "Melee",
+-- dang cam trai/sword/gun hoac vua bo melee giua tran farm thi tu cam lai Melee.
 -- v9: them 2 muc mua do: (1) Mua thu cong trong GUI: moi mon ghi ro gia Beli/Frag,
 -- chi ban remote khi du tien; (2) Auto Buy chay nen, UU TIEN chuoi Melee (vo) truoc
 -- roi moi toi Haki/Ability. Mon nao con thieu Mastery/Vat lieu/Sea thi server se tu
@@ -238,7 +240,7 @@ local statusText = "San sang"
 local function setStatus(s)
     statusText = s
     if Module._statusLabel then
-        Module._statusLabel.Text = "Trang thai: " .. s
+        pcall(function() Module._statusLabel:Set("Trang thai: " .. s) end)
     end
 end
 
@@ -344,25 +346,40 @@ local function findGiverPos(giverName)
     return nil
 end
 
+local function isMeleeTool(t)
+    return t ~= nil and t:IsA("Tool") and t.ToolTip == "Melee"
+end
+
+local lastMeleeEquipAt = 0
 local function equipMelee()
     local char, hum = getChar()
     if not char or not hum then return nil end
+
+    -- Dang cam dung Melee roi thi giu nguyen. Cam trai/Sword/Gun la coi nhu CHUA co melee.
     local equipped = char:FindFirstChildOfClass("Tool")
-    if equipped then return equipped end
+    if isMeleeTool(equipped) then return equipped end
+
     local backpack = Player:FindFirstChild("Backpack")
-    if not backpack then return nil end
-    local fallback = nil
-    for _, t in ipairs(backpack:GetChildren()) do
-        if t:IsA("Tool") then
-            if t.ToolTip == "Melee" or t.ToolTip == "Sword" then
-                hum:EquipTool(t)
-                return t
+    local melee = nil
+    for _, container in ipairs({ char, backpack }) do
+        if container then
+            for _, t in ipairs(container:GetChildren()) do
+                if isMeleeTool(t) then
+                    melee = t
+                    break
+                end
             end
-            fallback = fallback or t
         end
+        if melee then break end
     end
-    if fallback then hum:EquipTool(fallback) end
-    return fallback
+    if not melee then return nil end
+
+    -- Chi EquipTool khi Melee dang o Backpack; goi lai lien tuc se tu cam lai neu Bon vua bo tay.
+    if melee.Parent == backpack and tick() - lastMeleeEquipAt >= 0.35 then
+        lastMeleeEquipAt = tick()
+        pcall(function() hum:EquipTool(melee) end)
+    end
+    return melee
 end
 
 -- ===== Auto stat: co diem la do het vao stat da chon =====
@@ -764,6 +781,7 @@ local function fightMob(enemy, mobName)
             slowAcc = 0
             claimSimulation()
             buffHitbox()
+            tool = equipMelee() -- check lai dinh ky: bo Melee/doi tool giua tran thi cam lai
             spendStats()
             maintainAura()
             -- Chi bring khi con dang danh dung la quai cua quest hien tai
@@ -805,17 +823,18 @@ local function fightMob(enemy, mobName)
                 local part = enemy:FindFirstChild("Head") or eRoot
                 targets = { { model = enemy, part = part } }
             end
+            -- Moi nhip danh deu doi chieu tool dang cam: chi Melee moi duoc danh.
+            -- Bon vua bo Melee hoac chuyen sang trai/Sword/Gun thi equipMelee cam lai ngay.
+            tool = equipMelee()
             if not remoteAttack(targets) then
-                -- Fallback: khong co remote thi spam Activate cua vu khi
-                if tool and tool.Parent ~= char then tool = nil end
-                if not tool then tool = equipMelee() end
-                if tool then pcall(function() tool:Activate() end) end
+                -- Fallback: khong co remote thi spam Activate cua Melee dang cam tren tay
+                if isMeleeTool(tool) and tool.Parent == char then
+                    pcall(function() tool:Activate() end)
+                end
             else
                 -- Van Activate nhe de animation/don phu (chuan cac hub dang lam)
-                if tool and tool.Parent == char then
+                if isMeleeTool(tool) and tool.Parent == char then
                     pcall(function() tool:Activate() end)
-                elseif not tool then
-                    tool = equipMelee()
                 end
             end
         end
@@ -900,311 +919,203 @@ task.spawn(function()
     end
 end)
 
--- ===== GUI nhe cho dien thoai (co thu nho) =====
-local function buildGui()
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "BON_BloxFruits"
-    gui.ResetOnSpawn = false
-
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 236, 0, 520)
-    frame.Position = UDim2.new(0, 10, 0, 90)
-    frame.BackgroundColor3 = Color3.fromRGB(24, 26, 32)
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Parent = gui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
-
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -70, 0, 32)
-    title.Position = UDim2.new(0, 10, 0, 0)
-    title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v9"
-    title.TextColor3 = Color3.fromRGB(103, 232, 249)
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 13
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = frame
-
-    local body = Instance.new("Frame")
-    body.Name = "Body"
-    body.Size = UDim2.new(1, 0, 0, 452)
-    body.Position = UDim2.new(0, 0, 0, 34)
-    body.BackgroundTransparency = 1
-    body.Parent = frame
-
-    local function headerBtn(x, txt)
-        local b = Instance.new("TextButton")
-        b.Size = UDim2.new(0, 28, 0, 28)
-        b.Position = UDim2.new(1, x, 0, 2)
-        b.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
-        b.Text = txt
-        b.TextColor3 = Color3.fromRGB(230, 230, 230)
-        b.Font = Enum.Font.GothamBold
-        b.TextSize = 13
-        b.Parent = frame
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = b
-        return b
-    end
-
-    local minimized = false
-    local minBtn = headerBtn(-64, "-")
-    minBtn.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        body.Visible = not minimized
-        frame.Size = minimized and UDim2.new(0, 236, 0, 34) or UDim2.new(0, 236, 0, 520)
-        minBtn.Text = minimized and "+" or "-"
-    end)
-
-    local closeBtn = headerBtn(-32, "X")
-    closeBtn.MouseButton1Click:Connect(function()
-        Module.Stop()
-    end)
-
-    local function makeToggle(y, label, get, set)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, -20, 0, 38)
-        btn.Position = UDim2.new(0, 10, 0, y)
-        btn.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
-        btn.TextColor3 = Color3.fromRGB(230, 230, 230)
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 13
-        btn.Parent = body
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = btn
-        local function refresh()
-            btn.Text = label .. ": " .. (get() and "BAT" or "TAT")
-            btn.BackgroundColor3 = get() and Color3.fromRGB(14, 116, 144) or Color3.fromRGB(38, 41, 50)
-        end
-        btn.MouseButton1Click:Connect(function()
-            set(not get())
-            refresh()
+-- ===== GUI Rayfield =====
+local RayfieldLib = nil
+local function loadRayfield()
+    if RayfieldLib then return RayfieldLib end
+    local urls = {
+        "https://sirius.menu/rayfield",
+        "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
+    }
+    for _, url in ipairs(urls) do
+        local ok, lib = pcall(function()
+            local src = game:HttpGet(url)
+            local fn = loadstring(src)
+            assert(fn, "Rayfield compile fail")
+            return fn()
         end)
-        refresh()
-        return btn
-    end
-
-    makeToggle(4, "Auto Farm", function() return Settings.Farm end, function(v)
-        Settings.Farm = v
-        if v then
-            startFarm()
-        else
-            Flight.goal = nil
+        if ok and lib then
+            RayfieldLib = lib
+            return lib
         end
-    end)
-    makeToggle(46, "Gom Mob", function() return Settings.BringMobs end, function(v) Settings.BringMobs = v end)
-    makeToggle(88, "Tu Cong Stat", function() return Settings.AutoStat end, function(v) Settings.AutoStat = v end)
-    makeToggle(130, "Auto Aura (Buso)", function() return Settings.AutoAura end, function(v) Settings.AutoAura = v end)
+    end
+    warn("[BloxFruits] Khong tai duoc Rayfield UI (executor/ket noi chan HttpGet).")
+    return nil
+end
 
-    local statBtn = Instance.new("TextButton")
-    statBtn.Size = UDim2.new(1, -20, 0, 38)
-    statBtn.Position = UDim2.new(0, 10, 0, 172)
-    statBtn.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
-    statBtn.TextColor3 = Color3.fromRGB(230, 230, 230)
-    statBtn.Font = Enum.Font.Gotham
-    statBtn.TextSize = 13
-    statBtn.Parent = body
-    local sc = Instance.new("UICorner")
-    sc.CornerRadius = UDim.new(0, 6)
-    sc.Parent = statBtn
+local function buildGui()
+    local lib = loadRayfield()
+    if not lib then return nil end
+
+    local Window = lib:CreateWindow({
+        Name = "BON - Blox Fruits v10",
+        LoadingTitle = "BON Blox Fruits",
+        LoadingSubtitle = "Rayfield UI",
+        ConfigurationSaving = {
+            Enabled = false,
+        },
+        Discord = {
+            Enabled = false,
+            Invite = "noinvitelink",
+            RememberJoins = true,
+        },
+        KeySystem = false,
+    })
+    Module._rayfield = lib
+    Module._window = Window
+
+    -- ===== Tab Farm =====
+    local FarmTab = Window:CreateTab("Farm", 4483362458)
+    FarmTab:CreateSection("Trang thai")
+    local statusLabel = FarmTab:CreateLabel("Trang thai: " .. statusText)
+    Module._statusLabel = statusLabel
+
+    FarmTab:CreateSection("Auto Farm")
+    FarmTab:CreateToggle({
+        Name = "Auto Farm",
+        CurrentValue = Settings.Farm,
+        Flag = "BON_AutoFarm",
+        Callback = function(v)
+            Settings.Farm = v
+            if v then
+                startFarm()
+            else
+                Flight.goal = nil
+            end
+        end,
+    })
+    FarmTab:CreateToggle({
+        Name = "Gom Mob",
+        CurrentValue = Settings.BringMobs,
+        Flag = "BON_BringMobs",
+        Callback = function(v) Settings.BringMobs = v end,
+    })
+    FarmTab:CreateToggle({
+        Name = "Tu Cong Stat",
+        CurrentValue = Settings.AutoStat,
+        Flag = "BON_AutoStat",
+        Callback = function(v) Settings.AutoStat = v end,
+    })
+    FarmTab:CreateToggle({
+        Name = "Auto Aura (Buso)",
+        CurrentValue = Settings.AutoAura,
+        Flag = "BON_AutoAura",
+        Callback = function(v) Settings.AutoAura = v end,
+    })
+
     local statList = { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }
-    local statIdx = 1
-    statBtn.Text = "Stat: Melee (cham de doi)"
-    statBtn.MouseButton1Click:Connect(function()
-        statIdx = statIdx % #statList + 1
-        Settings.StatName = statList[statIdx]
-        statBtn.Text = "Stat: " .. Settings.StatName .. " (cham de doi)"
-    end)
+    FarmTab:CreateDropdown({
+        Name = "Stat tu cong",
+        Options = statList,
+        CurrentOption = { Settings.StatName },
+        MultipleOptions = false,
+        Flag = "BON_StatName",
+        Callback = function(option)
+            local v = type(option) == "table" and option[1] or option
+            if v then Settings.StatName = v end
+        end,
+    })
+    FarmTab:CreateSlider({
+        Name = "Toc do bay",
+        Range = { 100, 350 },
+        Increment = 25,
+        Suffix = "studs/s",
+        CurrentValue = Settings.FlySpeed,
+        Flag = "BON_FlySpeed",
+        Callback = function(v) Settings.FlySpeed = v end,
+    })
+    FarmTab:CreateSlider({
+        Name = "Gom toi da",
+        Range = { 2, 5 },
+        Increment = 1,
+        Suffix = "con",
+        CurrentValue = Settings.BringMax,
+        Flag = "BON_BringMax",
+        Callback = function(v) Settings.BringMax = v end,
+    })
 
-    -- Dong chinh so: nhan | - gia tri +
-    local function makeStepper(y, label, getText, onDelta)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(0, 96, 0, 34)
-        lbl.Position = UDim2.new(0, 10, 0, y)
-        lbl.BackgroundTransparency = 1
-        lbl.Text = label
-        lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
-        lbl.Font = Enum.Font.Gotham
-        lbl.TextSize = 12
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.Parent = body
+    -- ===== Tab Mua Do =====
+    local ShopTab = Window:CreateTab("Mua Do", 4483362458)
+    ShopTab:CreateSection("Auto Buy")
+    ShopTab:CreateToggle({
+        Name = "Auto Buy (uu tien Melee)",
+        CurrentValue = Settings.AutoBuy,
+        Flag = "BON_AutoBuy",
+        Callback = function(v) Settings.AutoBuy = v end,
+    })
+    local moneyLabel = ShopTab:CreateLabel("Tien: dang tai...")
 
-        local val = Instance.new("TextLabel")
-        val.Size = UDim2.new(0, 44, 0, 34)
-        val.Position = UDim2.new(0, 148, 0, y)
-        val.BackgroundTransparency = 1
-        val.Text = getText()
-        val.TextColor3 = Color3.fromRGB(103, 232, 249)
-        val.Font = Enum.Font.GothamBold
-        val.TextSize = 14
-        val.Parent = body
-
-        local function stepBtn(x, txt, delta)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(0, 34, 0, 34)
-            b.Position = UDim2.new(0, x, 0, y)
-            b.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
-            b.Text = txt
-            b.TextColor3 = Color3.fromRGB(230, 230, 230)
-            b.Font = Enum.Font.GothamBold
-            b.TextSize = 16
-            b.Parent = body
-            local c = Instance.new("UICorner")
-            c.CornerRadius = UDim.new(0, 6)
-            c.Parent = b
-            b.MouseButton1Click:Connect(function()
-                onDelta(delta)
-                val.Text = getText()
+    local shopButtons = {}
+    local function refreshShopButtons()
+        local beli, frag = getMoney()
+        pcall(function()
+            moneyLabel:Set("Beli: " .. fmtNum(beli) .. " | Frag: " .. fmtNum(frag) .. " - cham nut duoi de mua thu cong")
+        end)
+        for _, entry in ipairs(shopButtons) do
+            local item = entry.item
+            local owned = shopBought[item.name] or (item.tools and findToolByNames(item.tools) ~= nil)
+            pcall(function()
+                entry.button:Set(owned and ("Da co: " .. item.display) or ("Mua " .. item.display .. " | " .. priceText(item)))
             end)
         end
-        stepBtn(110, "-", -1)
-        stepBtn(196, "+", 1)
     end
 
-    makeStepper(214, "Toc do bay", function() return tostring(Settings.FlySpeed) end, function(d)
-        Settings.FlySpeed = math.clamp(Settings.FlySpeed + d * 25, 100, 350)
-    end)
-    makeStepper(252, "Gom toi da", function() return tostring(Settings.BringMax) end, function(d)
-        Settings.BringMax = math.clamp(Settings.BringMax + d, 2, 5)
-    end)
-
-    makeToggle(290, "Auto Buy (uu tien Melee)", function() return Settings.AutoBuy end, function(v) Settings.AutoBuy = v end)
-
-    -- Muc mua thu cong: cuon danh sach, moi nut ghi gia. Du tien moi ban remote.
-    local moneyLabel = Instance.new("TextLabel")
-    moneyLabel.Size = UDim2.new(1, -20, 0, 18)
-    moneyLabel.Position = UDim2.new(0, 10, 0, 332)
-    moneyLabel.BackgroundTransparency = 1
-    moneyLabel.Text = "MUA THU CONG: dang tai tien..."
-    moneyLabel.TextColor3 = Color3.fromRGB(160, 165, 175)
-    moneyLabel.Font = Enum.Font.Gotham
-    moneyLabel.TextSize = 10
-    moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
-    moneyLabel.Parent = body
-
-    local shopList = Instance.new("ScrollingFrame")
-    shopList.Name = "ShopList"
-    shopList.Size = UDim2.new(1, -20, 0, 96)
-    shopList.Position = UDim2.new(0, 10, 0, 352)
-    shopList.BackgroundColor3 = Color3.fromRGB(30, 33, 40)
-    shopList.BorderSizePixel = 0
-    shopList.ScrollBarThickness = 4
-    shopList.CanvasSize = UDim2.new(0, 0, 0, #SHOP_ITEMS * 38 + 4)
-    shopList.Parent = body
-    local shopCorner = Instance.new("UICorner")
-    shopCorner.CornerRadius = UDim.new(0, 6)
-    shopCorner.Parent = shopList
-
-    local shopRefreshers = {}
     for idx, item in ipairs(SHOP_ITEMS) do
-        local b = Instance.new("TextButton")
-        b.Size = UDim2.new(1, -8, 0, 34)
-        b.Position = UDim2.new(0, 4, 0, 4 + (idx - 1) * 38)
-        b.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
-        b.TextColor3 = Color3.fromRGB(230, 230, 230)
-        b.Font = Enum.Font.Gotham
-        b.TextSize = 10
-        b.TextXAlignment = Enum.TextXAlignment.Left
-        b.Parent = shopList
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = b
-        local function refresh()
-            local beli, frag = getMoney()
-            local affordable = (item.beli or 0) <= beli and (item.frag or 0) <= frag
-            local owned = shopBought[item.name] or (item.tools and findToolByNames(item.tools) ~= nil)
-            if owned then
-                b.Text = "  Da co: " .. item.display
-                b.BackgroundColor3 = Color3.fromRGB(21, 94, 117)
-            else
-                b.Text = "  Mua " .. item.display .. " | " .. priceText(item)
-                b.BackgroundColor3 = affordable and Color3.fromRGB(20, 83, 45) or Color3.fromRGB(38, 41, 50)
-            end
-        end
-        table.insert(shopRefreshers, refresh)
-        b.MouseButton1Click:Connect(function()
-            tryBuyItem(item, true)
-            refresh()
-        end)
-        refresh()
+        if idx == 1 then ShopTab:CreateSection("Haki / Ability") end
+        if idx == 5 then ShopTab:CreateSection("Vo (Melee) - tu thap toi cao") end
+        local button = ShopTab:CreateButton({
+            Name = "Mua " .. item.display .. " | " .. priceText(item),
+            Callback = function()
+                tryBuyItem(item, true)
+                refreshShopButtons()
+            end,
+        })
+        table.insert(shopButtons, { item = item, button = button })
     end
+    ShopTab:CreateButton({
+        Name = "Lam moi tien/gia",
+        Callback = function() refreshShopButtons() end,
+    })
+    refreshShopButtons()
 
-    local function refreshShop()
-        local beli, frag = getMoney()
-        moneyLabel.Text = "MUA THU CONG | Beli: " .. fmtNum(beli) .. " | Frag: " .. fmtNum(frag)
-        for _, fn in ipairs(shopRefreshers) do pcall(fn) end
-    end
-    refreshShop()
-
-    local status = Instance.new("TextLabel")
-    status.Size = UDim2.new(1, -20, 0, 26)
-    status.Position = UDim2.new(0, 10, 0, 456)
-    status.BackgroundTransparency = 1
-    status.Text = "Trang thai: San sang"
-    status.TextColor3 = Color3.fromRGB(160, 165, 175)
-    status.Font = Enum.Font.Gotham
-    status.TextSize = 11
-    status.TextXAlignment = Enum.TextXAlignment.Left
-    status.Parent = body
-    Module._statusLabel = status
-
-    -- Keo tha bang cam ung/chuot
-    local dragging, dragStart, startPos = false, nil, nil
-    frame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-        end
-    end)
-    frame.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-    frame.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
-
-    local parentGui = (gethui and gethui()) or Player:WaitForChild("PlayerGui")
-    -- Xoa GUI cua ban script cu (neu Bon vua chay lai loadstring)
-    local oldGui = parentGui:FindFirstChild("BON_BloxFruits")
-    if oldGui then oldGui:Destroy() end
-    gui.Parent = parentGui
     task.spawn(function()
-        while sessionAlive() and frame.Parent do
-            refreshShop()
+        while sessionAlive() and Module._window == Window do
+            refreshShopButtons()
             task.wait(2)
         end
     end)
-    return gui
+
+    pcall(function()
+        lib:Notify({
+            Title = "BON Blox Fruits v10",
+            Content = "Da tai Rayfield UI. Trang thai nam o tab Farm.",
+            Duration = 5,
+            Image = 4483362458,
+        })
+    end)
+    return Window
 end
 
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v9. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v10 (Rayfield). Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
     Settings.Farm = false
+    Settings.AutoBuy = false
     Flight.goal = nil
-    if Module._gui then
-        Module._gui:Destroy()
-        Module._gui = nil
+    Module._statusLabel = nil
+    if Module._rayfield then
+        pcall(function() Module._rayfield:Destroy() end)
+        Module._rayfield = nil
     end
+    Module._window = nil
+    Module._gui = nil
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v9). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v10). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
 
 return Module
