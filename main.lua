@@ -8,6 +8,10 @@ _G.BON = _G.BON or {}
 _G.BON.Modules = _G.BON.Modules or {}
 
 local function loadModule(name, path)
+    -- Chay lai loadstring: dung module cu truoc (neu co) de khoi trung GUI/vong lap
+    local old = _G.BON.Modules[name]
+    if old and type(old.Stop) == "function" then pcall(old.Stop) end
+
     local ok, result = pcall(function()
         -- them ?t= de ne cache cua GitHub raw, sua code la test lai duoc ngay
         local url = BASE .. path .. "?t=" .. tostring(math.floor(tick()))

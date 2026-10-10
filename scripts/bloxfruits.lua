@@ -792,8 +792,7 @@ local function buildGui()
 
     local closeBtn = headerBtn(-32, "X")
     closeBtn.MouseButton1Click:Connect(function()
-        Settings.Farm = false
-        gui:Destroy()
+        Module.Stop()
     end)
 
     local function makeToggle(y, label, get, set)
