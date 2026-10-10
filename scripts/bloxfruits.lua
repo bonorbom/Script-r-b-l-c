@@ -1,4 +1,8 @@
--- BON Blox Fruits Auto Farm (v8)
+-- BON Blox Fruits Auto Farm (v9)
+-- v9: them 2 muc mua do: (1) Mua thu cong trong GUI: moi mon ghi ro gia Beli/Frag,
+-- chi ban remote khi du tien; (2) Auto Buy chay nen, UU TIEN chuoi Melee (vo) truoc
+-- roi moi toi Haki/Ability. Mon nao con thieu Mastery/Vat lieu/Sea thi server se tu
+-- choi, script ghi nhan da thu va cho 90s chu khong spam remote.
 -- v8 (gom quai theo dung y Bon): gom den du so luong thi dung, khong gom them trong
 -- cung 1 tran; da bring la NHA RA cho game tu tinh vat ly (bo han viec khoa WalkSpeed/
 -- ghim quai moi tick); chi khi quai chay qua xa tam danh (>70 studs ngang) moi bring
@@ -58,6 +62,7 @@ local Settings = {
     AutoStat = false,      -- tu cong diem stat
     StatName = "Melee",    -- Melee / Defense / Sword / Gun / Demon Fruit
     AutoAura = false,      -- tu bat Aura (Buso Haki)
+    AutoBuy = false,       -- tu dong mua do khi du tien (uu tien Melee truoc)
     FlySpeed = 200,        -- toc do bay 100-350 (nut -/+ tren GUI)
     HoverHeight = 25,      -- do cao dung tren dau quai
     BringRadius = 200,     -- ban kinh quet/gom quai (Bon yeu cau 200)
@@ -389,6 +394,162 @@ local function maintainAura()
     end
     -- Bat aura (remote nay la nut gac nhu phim J: chi goi khi chua co HasBuso)
     pcall(function() CommF:InvokeServer("Buso") end)
+end
+
+-- ===== Mua do: Haki/Ability + Fighting Styles (Melee) =====
+-- Gia/remote doi chieu Blox Fruits Wiki + cac shop remote cong dong (10/2026).
+-- "args" la tham so ban thang vao CommF_ giong nut Mua trong cac shop hub.
+local SHOP_ITEMS = {
+    -- Haki / Ability (mua thu cong o day; Auto Buy chi mua sau khi xong Melee)
+    { name = "Geppo", display = "Geppo (Air Jump)", group = "Ability", beli = 10000, frag = 0, args = { "BuyHaki", "Geppo" } },
+    { name = "Buso", display = "Buso Haki (Aura)", group = "Ability", beli = 25000, frag = 0, args = { "BuyHaki", "Buso" } },
+    { name = "Soru", display = "Soru (Flash Step)", group = "Ability", beli = 100000, frag = 0, args = { "BuyHaki", "Soru" } },
+    { name = "Instinct", display = "Haki Quan Sat (Instinct)", group = "Ability", beli = 750000, frag = 0, minLevel = 300, note = "can Lv 300 + da danh Saber Expert", args = { "KenTalk", "Buy" } },
+
+    -- Chuoi Melee theo thu tu tien hoa. order nho = cap thap, Auto Buy khong mua lui xuong cap thap hon vo dang dung.
+    { name = "DarkStep", display = "Dark Step", group = "Melee", order = 1, beli = 150000, frag = 0, args = { "BuyBlackLeg" }, tools = { "Dark Step" } },
+    { name = "Electric", display = "Electric", group = "Melee", order = 2, beli = 500000, frag = 0, args = { "BuyElectro" }, tools = { "Electric", "Electro" } },
+    { name = "WaterKungFu", display = "Water Kung Fu", group = "Melee", order = 3, beli = 750000, frag = 0, args = { "BuyFishmanKarate" }, tools = { "Water Kung Fu", "Fishman Karate" } },
+    { name = "DragonBreath", display = "Dragon Breath", group = "Melee", order = 4, beli = 0, frag = 1500, args = { "BlackbeardReward", "DragonClaw", "2" }, tools = { "Dragon Breath", "Dragon Claw" } },
+    { name = "Superhuman", display = "Superhuman", group = "Melee", order = 5, beli = 3000000, frag = 0, note = "can 300 Mastery: Dark Step/Electric/Water/Dragon Breath", args = { "BuySuperhuman" }, tools = { "Superhuman" } },
+    { name = "DeathStep", display = "Death Step", group = "Melee", order = 6, beli = 2500000, frag = 5000, note = "can 400 Mastery Dark Step", args = { "BuyDeathStep" }, tools = { "Death Step" } },
+    { name = "SharkmanKarate", display = "Sharkman Karate", group = "Melee", order = 7, beli = 2500000, frag = 5000, note = "can 400 Mastery Water Kung Fu + Water Key", args = { "BuySharkmanKarate" }, tools = { "Sharkman Karate" } },
+    { name = "ElectricClaw", display = "Electric Claw", group = "Melee", order = 8, beli = 3000000, frag = 5000, note = "can 400 Mastery Electric + lam quest Previous Hero", args = { "BuyElectricClaw" }, tools = { "Electric Claw" } },
+    { name = "DragonTalon", display = "Dragon Talon", group = "Melee", order = 9, beli = 3000000, frag = 5000, note = "can 400 Mastery Dragon Breath + Fire Essence", args = { "BuyDragonTalon" }, tools = { "Dragon Talon" } },
+    { name = "Godhuman", display = "Godhuman", group = "Melee", order = 10, beli = 5000000, frag = 5000, note = "can 400 Mastery 5 vo truoc + vat lieu", args = { "BuyGodhuman" }, tools = { "Godhuman", "God Human" } },
+    { name = "SanguineArt", display = "Sanguine Art", group = "Melee", order = 11, beli = 5000000, frag = 5000, note = "can vat lieu + Leviathan Heart (Sea 3)", args = { "BuySanguineArt" }, tools = { "Sanguine Art" } },
+}
+Module.ShopItems = SHOP_ITEMS
+
+local function getMoney()
+    local b = Data:FindFirstChild("Beli")
+    local f = Data:FindFirstChild("Fragments")
+    return (b and b.Value) or 0, (f and f.Value) or 0
+end
+
+local function fmtNum(n)
+    local s = tostring(math.floor(tonumber(n) or 0))
+    return (s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))
+end
+
+local function priceText(item)
+    if (item.beli or 0) > 0 and (item.frag or 0) > 0 then
+        return fmtNum(item.beli) .. " Beli + " .. fmtNum(item.frag) .. " Frag"
+    elseif (item.frag or 0) > 0 then
+        return fmtNum(item.frag) .. " Frag"
+    end
+    return fmtNum(item.beli or 0) .. " Beli"
+end
+
+local function findToolByNames(names)
+    if not names then return nil end
+    local wanted = {}
+    for _, n in ipairs(names) do wanted[string.lower(n)] = true end
+    local char = Player.Character
+    local backpack = Player:FindFirstChild("Backpack")
+    for _, container in ipairs({ char, backpack }) do
+        if container then
+            for _, t in ipairs(container:GetChildren()) do
+                if t:IsA("Tool") and wanted[string.lower(t.Name)] then return t end
+            end
+        end
+    end
+    return nil
+end
+
+-- Cap cua vo dang co (de Auto Buy khong mua lui xuong vo yeu hon vo dang dung)
+local function currentMeleeOrder()
+    local best = 0
+    local char = Player.Character
+    local backpack = Player:FindFirstChild("Backpack")
+    for _, item in ipairs(SHOP_ITEMS) do
+        if item.group == "Melee" and item.tools then
+            for _, container in ipairs({ char, backpack }) do
+                if container then
+                    for _, t in ipairs(container:GetChildren()) do
+                        if t:IsA("Tool") then
+                            for _, n in ipairs(item.tools) do
+                                if string.lower(t.Name) == string.lower(n) and item.order > best then
+                                    best = item.order
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local shopBought = {}    -- mon da mua thanh cong trong phien nay
+local shopAttemptAt = {} -- lan cuoi ban remote mua (chong spam khi thieu dieu kien)
+local unpackArgs = table.unpack or unpack
+
+-- Mua 1 mon. manual=true: Bon bam nut, du tien la ban ngay.
+-- Tra ve: true = da mua, "sent" = da ban remote (cho ket qua), false = chua mua.
+local function tryBuyItem(item, manual)
+    local beli, frag = getMoney()
+    if (item.beli or 0) > beli or (item.frag or 0) > frag then
+        setStatus("Chua du tien mua " .. item.display .. ": can " .. priceText(item) .. " (dang co " .. fmtNum(beli) .. " Beli, " .. fmtNum(frag) .. " Frag)")
+        return false
+    end
+    if item.minLevel and Level.Value < item.minLevel then
+        setStatus(item.display .. " can Lv " .. tostring(item.minLevel) .. "+ (" .. (item.note or "") .. ")")
+        return false
+    end
+    if item.group == "Melee" and findToolByNames(item.tools) then
+        shopBought[item.name] = true
+        setStatus("Dang co vo: " .. item.display)
+        return true
+    end
+    if not manual and shopAttemptAt[item.name] and (tick() - shopAttemptAt[item.name]) < 90 then
+        return false -- moi thu gan day ma chua xong: kha nang thieu Mastery/Vat lieu/Sea, cho 90s
+    end
+    shopAttemptAt[item.name] = tick()
+    setStatus("Dang mua " .. item.display .. " (" .. priceText(item) .. ")...")
+    local ok = pcall(function()
+        return CommF:InvokeServer(unpackArgs(item.args))
+    end)
+    task.wait(0.7)
+    local beli2, frag2 = getMoney()
+    if (ok and (beli2 < beli or frag2 < frag)) or findToolByNames(item.tools) then
+        shopBought[item.name] = true
+        setStatus("Da mua: " .. item.display)
+        return true
+    end
+    setStatus("Da gui mua " .. item.display .. ". Neu chua nhan thi con thieu dieu kien: " .. (item.note or "kiem tra lai tien/Sea"))
+    return "sent"
+end
+
+-- Auto Buy kieu Kaitun: uu tien het chuoi Melee truoc, xong moi toi Haki/Ability.
+local autoBuyLast = 0
+local function autoBuyStep()
+    if not Settings.AutoBuy then return end
+    if tick() - autoBuyLast < 5 then return end
+    autoBuyLast = tick()
+
+    local curOrder = currentMeleeOrder()
+    for _, item in ipairs(SHOP_ITEMS) do
+        if item.group == "Melee" and not shopBought[item.name] then
+            if item.order and curOrder > 0 and item.order <= curOrder then
+                shopBought[item.name] = true -- dang dung vo cap cao hon: khong mua lui
+            else
+                local beli, frag = getMoney()
+                if (item.beli or 0) <= beli and (item.frag or 0) <= frag then
+                    if tryBuyItem(item, false) then return end -- chi mua 1 mon moi luot
+                end
+            end
+        end
+    end
+    for _, item in ipairs(SHOP_ITEMS) do
+        if item.group == "Ability" and not shopBought[item.name] then
+            local beli, frag = getMoney()
+            if (item.beli or 0) <= beli and (item.frag or 0) <= frag then
+                if tryBuyItem(item, false) then return end
+            end
+        end
+    end
 end
 
 -- ===== Fast attack =====
@@ -729,6 +890,16 @@ Player.Idled:Connect(function()
     VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
 end)
 
+-- Auto Buy chay nen doc lap (ke ca khi Auto Farm dang tat)
+task.spawn(function()
+    while sessionAlive() do
+        if Settings.AutoBuy then
+            pcall(autoBuyStep)
+        end
+        task.wait(1)
+    end
+end)
+
 -- ===== GUI nhe cho dien thoai (co thu nho) =====
 local function buildGui()
     local gui = Instance.new("ScreenGui")
@@ -736,7 +907,7 @@ local function buildGui()
     gui.ResetOnSpawn = false
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 236, 0, 358)
+    frame.Size = UDim2.new(0, 236, 0, 520)
     frame.Position = UDim2.new(0, 10, 0, 90)
     frame.BackgroundColor3 = Color3.fromRGB(24, 26, 32)
     frame.BorderSizePixel = 0
@@ -751,7 +922,7 @@ local function buildGui()
     title.Size = UDim2.new(1, -70, 0, 32)
     title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "BON - Blox Fruits v8"
+    title.Text = "BON - Blox Fruits v9"
     title.TextColor3 = Color3.fromRGB(103, 232, 249)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -760,7 +931,7 @@ local function buildGui()
 
     local body = Instance.new("Frame")
     body.Name = "Body"
-    body.Size = UDim2.new(1, 0, 0, 324)
+    body.Size = UDim2.new(1, 0, 0, 452)
     body.Position = UDim2.new(0, 0, 0, 34)
     body.BackgroundTransparency = 1
     body.Parent = frame
@@ -786,7 +957,7 @@ local function buildGui()
     minBtn.MouseButton1Click:Connect(function()
         minimized = not minimized
         body.Visible = not minimized
-        frame.Size = minimized and UDim2.new(0, 236, 0, 34) or UDim2.new(0, 236, 0, 358)
+        frame.Size = minimized and UDim2.new(0, 236, 0, 34) or UDim2.new(0, 236, 0, 520)
         minBtn.Text = minimized and "+" or "-"
     end)
 
@@ -903,9 +1074,77 @@ local function buildGui()
         Settings.BringMax = math.clamp(Settings.BringMax + d, 2, 5)
     end)
 
+    makeToggle(290, "Auto Buy (uu tien Melee)", function() return Settings.AutoBuy end, function(v) Settings.AutoBuy = v end)
+
+    -- Muc mua thu cong: cuon danh sach, moi nut ghi gia. Du tien moi ban remote.
+    local moneyLabel = Instance.new("TextLabel")
+    moneyLabel.Size = UDim2.new(1, -20, 0, 18)
+    moneyLabel.Position = UDim2.new(0, 10, 0, 332)
+    moneyLabel.BackgroundTransparency = 1
+    moneyLabel.Text = "MUA THU CONG: dang tai tien..."
+    moneyLabel.TextColor3 = Color3.fromRGB(160, 165, 175)
+    moneyLabel.Font = Enum.Font.Gotham
+    moneyLabel.TextSize = 10
+    moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    moneyLabel.Parent = body
+
+    local shopList = Instance.new("ScrollingFrame")
+    shopList.Name = "ShopList"
+    shopList.Size = UDim2.new(1, -20, 0, 96)
+    shopList.Position = UDim2.new(0, 10, 0, 352)
+    shopList.BackgroundColor3 = Color3.fromRGB(30, 33, 40)
+    shopList.BorderSizePixel = 0
+    shopList.ScrollBarThickness = 4
+    shopList.CanvasSize = UDim2.new(0, 0, 0, #SHOP_ITEMS * 38 + 4)
+    shopList.Parent = body
+    local shopCorner = Instance.new("UICorner")
+    shopCorner.CornerRadius = UDim.new(0, 6)
+    shopCorner.Parent = shopList
+
+    local shopRefreshers = {}
+    for idx, item in ipairs(SHOP_ITEMS) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -8, 0, 34)
+        b.Position = UDim2.new(0, 4, 0, 4 + (idx - 1) * 38)
+        b.BackgroundColor3 = Color3.fromRGB(38, 41, 50)
+        b.TextColor3 = Color3.fromRGB(230, 230, 230)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 10
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Parent = shopList
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 6)
+        c.Parent = b
+        local function refresh()
+            local beli, frag = getMoney()
+            local affordable = (item.beli or 0) <= beli and (item.frag or 0) <= frag
+            local owned = shopBought[item.name] or (item.tools and findToolByNames(item.tools) ~= nil)
+            if owned then
+                b.Text = "  Da co: " .. item.display
+                b.BackgroundColor3 = Color3.fromRGB(21, 94, 117)
+            else
+                b.Text = "  Mua " .. item.display .. " | " .. priceText(item)
+                b.BackgroundColor3 = affordable and Color3.fromRGB(20, 83, 45) or Color3.fromRGB(38, 41, 50)
+            end
+        end
+        table.insert(shopRefreshers, refresh)
+        b.MouseButton1Click:Connect(function()
+            tryBuyItem(item, true)
+            refresh()
+        end)
+        refresh()
+    end
+
+    local function refreshShop()
+        local beli, frag = getMoney()
+        moneyLabel.Text = "MUA THU CONG | Beli: " .. fmtNum(beli) .. " | Frag: " .. fmtNum(frag)
+        for _, fn in ipairs(shopRefreshers) do pcall(fn) end
+    end
+    refreshShop()
+
     local status = Instance.new("TextLabel")
     status.Size = UDim2.new(1, -20, 0, 26)
-    status.Position = UDim2.new(0, 10, 0, 292)
+    status.Position = UDim2.new(0, 10, 0, 456)
     status.BackgroundTransparency = 1
     status.Text = "Trang thai: San sang"
     status.TextColor3 = Color3.fromRGB(160, 165, 175)
@@ -941,13 +1180,19 @@ local function buildGui()
     local oldGui = parentGui:FindFirstChild("BON_BloxFruits")
     if oldGui then oldGui:Destroy() end
     gui.Parent = parentGui
+    task.spawn(function()
+        while sessionAlive() and frame.Parent do
+            refreshShop()
+            task.wait(2)
+        end
+    end)
     return gui
 end
 
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v8. Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v9. Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -960,6 +1205,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v8). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v9). Bam 'Auto Farm: BAT' tren GUI de farm. Level: " .. tostring(Level.Value))
 
 return Module
