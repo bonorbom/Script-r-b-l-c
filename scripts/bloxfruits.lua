@@ -1,4 +1,14 @@
--- BON Blox Fruits Auto Farm (v10)
+-- BON Blox Fruits Auto Farm (v11)
+-- v11: them tab Di Chuyen: tu nhan Sea hien tai -> dropdown danh sach dao cua Sea do,
+-- chon la bay toi; bat di chuyen se TU TAT Auto Farm de tranh 2 module danh nhau.
+-- Them "bypass teleporter": dich toi dao -> reset chet -> game nhan spawn o dao;
+-- reset 2 lan khong duoc thi chuyen sang bay, dap nham dao thi lam lai y het.
+-- 2 cong tac: "Treo dao (bypass)" de treo kieu nay, nut "Bypass tele 1 lan".
+-- Them "auto teleporter for auto farm": khi len level doi quest can sang dao moi,
+-- farm TU bypass teleporter toi dao do (reset 2 lan -> bay, nham dao -> lam lai
+-- vong lap), KHONG tat Auto Farm. Module auto-tele nay phu thuoc vao auto farm:
+-- farm tat la dung di chuyen ngay; sau nay them tinh nang nao can tat farm de
+-- tranh module danh nhau thi phai bao Bon truoc.
 -- v10: doi GUI sang Rayfield; sua equipMelee chi cong nhan dung ToolTip "Melee",
 -- dang cam trai/sword/gun hoac vua bo melee giua tran farm thi tu cam lai Melee.
 -- v9: them 2 muc mua do: (1) Mua thu cong trong GUI: moi mon ghi ro gia Beli/Frag,
@@ -46,6 +56,7 @@ if not SEA_PLACES[game.PlaceId] then
     return nil
 end
 local IS_SEA1 = game.PlaceId == 2753915549
+local CURRENT_SEA = game.PlaceId == 2753915549 and 1 or (game.PlaceId == 4442272183 and 2 or 3)
 
 local Module = {}
 
@@ -70,6 +81,9 @@ local Settings = {
     BringRadius = 200,     -- ban kinh quet/gom quai (Bon yeu cau 200)
     AttackRate = 0.1,      -- giay giua moi don danh
     AttackRange = 55,      -- hitbox buff (tam danh)
+    TravelMove = false,   -- noi bo: dang di chuyen toi dao (khong phai farm)
+    IslandAFK = false,    -- treo dao kieu bypass teleporter
+    SelectedIsland = nil, -- ten dao dang chon trong tab Di Chuyen
 }
 Module.Settings = Settings
 
@@ -172,6 +186,73 @@ local QUESTS = {
     {2675, "High Disciple", "SubmergedQuest3", 1, "Submerged Quest Giver 3", {9636.5, -1992.2, 9609.5}, {9828.1, -1940.9, 9693.1}},
     {2700, "Grand Devotee", "SubmergedQuest3", 1, "Submerged Quest Giver 3", {9636.5, -1992.2, 9609.5}, {9559.2, -1994.4, 9798.7}},
 }
+
+-- ===== Danh sach dao theo Sea (dung cho tab Di Chuyen) =====
+-- Toa do lay tu NPC giao quest trong bang QUESTS ben tren, du de bay/dich toi dao.
+local ISLANDS = {
+    -- Sea 1
+    {sea = 1, name = "Pirate Starter (0-10)", pos = {1060.9, 16.5, 1547.8}},
+    {sea = 1, name = "Jungle (15-30)", pos = {-1601.7, 36.9, 153.4}},
+    {sea = 1, name = "Pirate Village (30-60)", pos = {-1140.2, 4.8, 3827.4}},
+    {sea = 1, name = "Desert (60-90)", pos = {896.5, 6.4, 4390.1}},
+    {sea = 1, name = "Frozen Village (90-120)", pos = {1386.8, 87.3, -1298.4}},
+    {sea = 1, name = "Marine Fortress (120-150)", pos = {-5035.5, 28.7, 4324.2}},
+    {sea = 1, name = "Skylands (150-190)", pos = {-4842.1, 717.7, -2623.0}},
+    {sea = 1, name = "Prison (190-250)", pos = {5310.6, 0.4, 474.9}},
+    {sea = 1, name = "Colosseum (250-300)", pos = {-1577.8, 7.4, -2984.5}},
+    {sea = 1, name = "Magma Village (300-375)", pos = {-5316.1, 12.3, 8517.0}},
+    {sea = 1, name = "Underwater City (375-450)", pos = {61122.7, 18.5, 1569.4}},
+    {sea = 1, name = "Upper Skylands (450-625)", pos = {-4721.9, 845.3, -1953.8}},
+    {sea = 1, name = "Fountain City (625-700)", pos = {5258.3, 38.5, 4050.0}},
+    -- Sea 2
+    {sea = 2, name = "Kingdom of Rose (700-850)", pos = {-427.7, 73.0, 1835.9}},
+    {sea = 2, name = "Green Zone (875-950)", pos = {-2441.0, 73.0, -3217.7}},
+    {sea = 2, name = "Graveyard (950-1000)", pos = {-5494.3, 48.5, -794.6}},
+    {sea = 2, name = "Snow Mountain (1000-1100)", pos = {607.1, 401.4, -5370.6}},
+    {sea = 2, name = "Hot and Cold (1100-1250)", pos = {-5429.0, 16.0, -5298.0}},
+    {sea = 2, name = "Cursed Ship (1250-1350)", pos = {1040.3, 125.1, 32911.0}},
+    {sea = 2, name = "Ice Castle (1350-1400)", pos = {5668.1, 28.2, -6484.6}},
+    {sea = 2, name = "Forgotten Island (1425-1500)", pos = {-3054.6, 236.9, -10147.8}},
+    -- Sea 3
+    {sea = 3, name = "Port Town (1500-1575)", pos = {-289.6, 43.8, 5580.1}},
+    {sea = 3, name = "Hydra Island (1575-1700)", pos = {6735.1, 127.0, -711.1}},
+    {sea = 3, name = "Great Tree (1700-1775)", pos = {2180.0, 28.7, -6740.1}},
+    {sea = 3, name = "Floating Turtle (1775-1975)", pos = {-10582.8, 331.8, -8757.7}},
+    {sea = 3, name = "Haunted Castle (1975-2075)", pos = {-9480.8, 142.1, 5566.4}},
+    {sea = 3, name = "Sea of Treats (2075-2450)", pos = {-2022.3, 36.9, -12031.0}},
+    {sea = 3, name = "Tiki Outpost (2450+)", pos = {-16548.8, 55.6, -172.8}},
+}
+
+local function getSeaIslands()
+    local t = {}
+    for _, is in ipairs(ISLANDS) do
+        if is.sea == CURRENT_SEA then
+            table.insert(t, is)
+        end
+    end
+    return t
+end
+
+local function findIslandByName(name)
+    if not name then return nil end
+    for _, is in ipairs(getSeaIslands()) do
+        if is.name == name then
+            return is
+        end
+    end
+    return nil
+end
+
+local function nearestSeaIsland(pos)
+    local best, bestDist = nil, math.huge
+    for _, is in ipairs(getSeaIslands()) do
+        local d = (V(is.pos) - pos).Magnitude
+        if d < bestDist then
+            best, bestDist = is, d
+        end
+    end
+    return best, bestDist
+end
 
 -- ===== Tien ich =====
 local CommF = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("CommF_")
@@ -316,6 +397,321 @@ local function flyToSmart(pos, timeout)
         flyGoalTo(cruise, timeout * 0.5, 25)
     end
     return flyGoalTo(pos, timeout * 0.6, 6)
+end
+
+-- ===== Di chuyen toi dao (tab Di Chuyen) =====
+-- Bat dau di chuyen la TU TAT Auto Farm de tranh 2 module danh nhau.
+local function stopFarmForTravel(reason)
+    if Settings.Farm then
+        Settings.Farm = false
+        Flight.goal = nil
+        pcall(function()
+            if Module._farmToggle then
+                Module._farmToggle:Set(false)
+            end
+        end)
+    end
+    Settings.TravelMove = true
+    if reason then
+        setStatus(reason)
+    end
+end
+
+local function endTravel()
+    Settings.TravelMove = false
+    Flight.goal = nil
+end
+
+-- Bay muot rieng cho travel (khong phu thuoc Settings.Farm)
+local function travelFlyTo(pos, timeout)
+    timeout = timeout or 120
+    local t0 = tick()
+    local last = tick()
+    while sessionAlive() and Settings.TravelMove and (tick() - t0) < timeout do
+        local char, hum, hrp = getChar()
+        if not hrp or not hum or hum.Health <= 0 then
+            task.wait(0.5)
+        else
+            if (pos - hrp.Position).Magnitude <= 10 then
+                return true
+            end
+            pcall(function()
+                for _, p in ipairs(char:GetDescendants()) do
+                    if p:IsA("BasePart") then
+                        p.CanCollide = false
+                    end
+                end
+            end)
+            local now = tick()
+            local dt = math.min(math.max(now - last, 0.01), 0.25)
+            last = now
+            flyStep(pos, dt)
+            task.wait(0.05)
+        end
+    end
+    local _, _, hrp = getChar()
+    return hrp ~= nil and (pos - hrp.Position).Magnitude <= 12
+end
+
+local function waitRespawn(timeout)
+    timeout = timeout or 12
+    local t0 = tick()
+    while sessionAlive() and (tick() - t0) < timeout do
+        local char = Player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hum and hrp and hum.Health > 0 then
+            return char, hum, hrp
+        end
+        task.wait(0.2)
+    end
+    return nil, nil, nil
+end
+
+local function resetCharacterOnce()
+    local _, hum = getChar()
+    if not hum then
+        return false
+    end
+    pcall(function()
+        hum.Health = 0
+    end)
+    local t0 = tick()
+    while sessionAlive() and (tick() - t0) < 5 do
+        local char = Player.Character
+        local h = char and char:FindFirstChildOfClass("Humanoid")
+        if not h or h.Health <= 0 then
+            break
+        end
+        task.wait(0.2)
+    end
+    local _, _, hrp = waitRespawn(12)
+    return hrp ~= nil
+end
+
+local function directTeleport(pos)
+    local _, _, hrp = getChar()
+    if not hrp then
+        return false
+    end
+    pcall(function()
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 12, 0))
+    end)
+    task.wait(0.8)
+    return true
+end
+
+-- Bay 1 lan toi dao; dap nham dao thi bay lai (toi da 3 vong)
+local function flyToIslandOnce(island)
+    if not island then
+        setStatus("Chua chon dao")
+        return false
+    end
+    stopFarmForTravel("Bay toi " .. island.name .. " (da tat Auto Farm)")
+    local target = V(island.pos)
+    for round = 1, 3 do
+        if not sessionAlive() or not Settings.TravelMove then
+            return false
+        end
+        setStatus("Bay (" .. round .. "/3) toi " .. island.name)
+        if travelFlyTo(target, 120) then
+            local _, _, hrp = getChar()
+            local near = hrp and nearestSeaIsland(hrp.Position)
+            if near and near.name == island.name then
+                setStatus("Da toi " .. island.name)
+                endTravel()
+                return true
+            end
+            setStatus("Dap nham " .. (near and near.name or "?") .. ", bay lai y het")
+        else
+            setStatus("Bay chua toi " .. island.name .. ", thu lai")
+        end
+        task.wait(0.5)
+    end
+    endTravel()
+    setStatus("Bay that bai: " .. island.name)
+    return false
+end
+
+-- Bypass teleporter: dich toi dao -> reset chet -> game nhan spawn o dao.
+-- Reset 2 lan lien tiep khong duoc thi chuyen sang bay; dap nham dao thi lam lai y het.
+local function bypassTeleportIsland(island)
+    if not island then
+        setStatus("Chua chon dao")
+        return false
+    end
+    stopFarmForTravel("Bypass: dang toi " .. island.name .. " (da tat Auto Farm)")
+    local target = V(island.pos)
+    for round = 1, 3 do
+        if not sessionAlive() or not Settings.TravelMove then
+            return false
+        end
+        setStatus("Bypass (" .. round .. "/3): dich toi " .. island.name)
+        directTeleport(target)
+        local ok = false
+        for i = 1, 2 do
+            if not sessionAlive() or not Settings.TravelMove then
+                return false
+            end
+            setStatus("Bypass: reset lan " .. i .. " tai " .. island.name)
+            if resetCharacterOnce() then
+                local _, _, hrp = getChar()
+                if hrp then
+                    local near, dist = nearestSeaIsland(hrp.Position)
+                    if near and near.name == island.name and dist <= 350 then
+                        ok = true
+                        break
+                    end
+                    setStatus("Bypass: sau reset dang o " .. (near and near.name or "?") .. ", thu lai")
+                end
+            else
+                setStatus("Bypass: khong hoi sinh duoc, doi chut...")
+                task.wait(1)
+            end
+        end
+        if ok then
+            setStatus("Bypass OK: da o " .. island.name)
+            endTravel()
+            return true
+        end
+        setStatus("Bypass: reset 2 lan khong xong, chuyen sang bay...")
+        if travelFlyTo(target, 120) then
+            local _, _, hrp = getChar()
+            local near = hrp and nearestSeaIsland(hrp.Position)
+            if near and near.name == island.name then
+                setStatus("Bay OK: da toi " .. island.name)
+                endTravel()
+                return true
+            end
+            setStatus("Bay dap nham " .. (near and near.name or "?") .. ", lam lai y het")
+        else
+            setStatus("Bay khong toi duoc " .. island.name .. ", thu lai")
+        end
+        task.wait(1)
+    end
+    endTravel()
+    setStatus("Bypass that bai: khong toi duoc " .. island.name)
+    return false
+end
+
+-- Treo dao kieu bypass: giu nhan vat o dao da chon, lac la dua ve lai
+local function islandAfkLoop()
+    if Module._islandAfkRunning then
+        return
+    end
+    Module._islandAfkRunning = true
+    task.spawn(function()
+        local failStreak = 0
+        while sessionAlive() and Settings.IslandAFK do
+            local ok, err = pcall(function()
+                local island = findIslandByName(Settings.SelectedIsland)
+                if not island then
+                    setStatus("Treo dao: chua chon dao")
+                    task.wait(1)
+                    return
+                end
+                local _, hum, hrp = getChar()
+                if not hrp or not hum or hum.Health <= 0 then
+                    setStatus("Treo dao: cho hoi sinh...")
+                    task.wait(1)
+                    return
+                end
+                local near, dist = nearestSeaIsland(hrp.Position)
+                if not near or near.name ~= island.name or dist > 350 then
+                    if bypassTeleportIsland(island) then
+                        failStreak = 0
+                    else
+                        failStreak = failStreak + 1
+                        if failStreak >= 3 then
+                            setStatus("Treo dao: that bai 3 lan lien tiep, tu tat")
+                            Settings.IslandAFK = false
+                            pcall(function()
+                                if Module._afkToggle then
+                                    Module._afkToggle:Set(false)
+                                end
+                            end)
+                        end
+                    end
+                else
+                    failStreak = 0
+                    Settings.TravelMove = false
+                    setStatus("Treo tai " .. island.name .. " (cach tam " .. math.floor(dist) .. ")")
+                    task.wait(5)
+                end
+            end)
+            if not ok then
+                setStatus("Treo dao loi nhe: " .. tostring(err))
+                task.wait(2)
+            end
+            task.wait(0.5)
+        end
+        Settings.TravelMove = false
+        Module._islandAfkRunning = false
+        setStatus("Da tat treo dao")
+    end)
+end
+
+-- Farm tu di chuyen toi dao moi khi doi quest (len level): DUNG bypass teleporter
+-- voi co che phong ve nhu tab Di Chuyen (reset 2 lan -> bay, nham dao -> lam lai),
+-- nhung KHONG tat Auto Farm. Module auto-tele nay PHU THUOC vao auto farm:
+-- farm tat la dung di chuyen ngay.
+local function farmTravelToIsland(target, label)
+    if not Settings.Farm then
+        return false
+    end
+    Settings.TravelMove = true
+    Module._farmTravel = true
+    local expected = nearestSeaIsland(target)
+    local okAll = false
+    for round = 1, 3 do
+        if not sessionAlive() or not Settings.Farm then
+            break
+        end
+        setStatus("Farm: bypass toi " .. label .. " (" .. round .. "/3)")
+        directTeleport(target)
+        local ok = false
+        for i = 1, 2 do
+            if not sessionAlive() or not Settings.Farm then
+                break
+            end
+            if resetCharacterOnce() then
+                local _, _, hrp = getChar()
+                if hrp then
+                    local near, dist = nearestSeaIsland(hrp.Position)
+                    if near and expected and near.name == expected.name and dist <= 350 then
+                        ok = true
+                        break
+                    end
+                end
+            end
+            task.wait(0.5)
+        end
+        if not ok then
+            -- Reset 2 lan khong duoc -> bay nhu cu (farm van bat)
+            setStatus("Farm: bypass chua xong, bay toi " .. label)
+            if flyToSmart(target, 90) then
+                local _, _, hrp = getChar()
+                local near = hrp and nearestSeaIsland(hrp.Position)
+                if near and expected and near.name == expected.name then
+                    ok = true
+                end
+            end
+        end
+        if ok then
+            okAll = true
+            break
+        end
+        setStatus("Farm: chua toi dung dao, lam lai teleporter...")
+        task.wait(1)
+    end
+    Settings.TravelMove = false
+    Module._farmTravel = false
+    if okAll then
+        setStatus("Farm: da toi " .. label)
+    else
+        setStatus("Farm: teleporter gap truc trac, farm tiep tai cho hien tai")
+    end
+    return okAll
 end
 
 local function findEnemy(mobName)
@@ -717,13 +1113,16 @@ local function ensureQuest()
     local key = questKey(q)
 
     if key ~= QuestFlow.key then
-        -- Quest moi (len level / moi bat farm): bay toi dao roi moi StartQuest.
+        -- Quest moi (len level / moi bat farm): auto-teleporter toi dao bang bypass
+        -- (module nay phu thuoc auto farm, khong tat farm khi di chuyen).
         -- Khong can AbandonQuest: nhan quest moi la server tu de len quest cu.
         local anchor = IS_SEA1 and V(q[7]) or V(q[6])
         local _, _, hrp = getChar()
         if hrp and (anchor - hrp.Position).Magnitude > 60 then
-            setStatus("Bay toi dao nhan quest (" .. q[2] .. ")...")
-            flyToSmart(anchor + Vector3.new(0, 10, 0), 90)
+            farmTravelToIsland(anchor + Vector3.new(0, 10, 0), q[2])
+            if not Settings.Farm then
+                return q
+            end
         end
         local giverPos = findGiverPos(q[5])
         if giverPos then
@@ -948,7 +1347,7 @@ local function buildGui()
     if not lib then return nil end
 
     local Window = lib:CreateWindow({
-        Name = "BON - Blox Fruits v10",
+        Name = "BON - Blox Fruits v11",
         LoadingTitle = "BON Blox Fruits",
         LoadingSubtitle = "Rayfield UI",
         ConfigurationSaving = {
@@ -971,11 +1370,17 @@ local function buildGui()
     Module._statusLabel = statusLabel
 
     FarmTab:CreateSection("Auto Farm")
-    FarmTab:CreateToggle({
+    local farmToggle = FarmTab:CreateToggle({
         Name = "Auto Farm",
         CurrentValue = Settings.Farm,
         Flag = "BON_AutoFarm",
         Callback = function(v)
+            if v and Settings.TravelMove then
+                setStatus("Dang di chuyen, khong bat Auto Farm cung luc")
+                pcall(function() farmToggle:Set(false) end)
+                Settings.Farm = false
+                return
+            end
             Settings.Farm = v
             if v then
                 startFarm()
@@ -984,6 +1389,7 @@ local function buildGui()
             end
         end,
     })
+    Module._farmToggle = farmToggle
     FarmTab:CreateToggle({
         Name = "Gom Mob",
         CurrentValue = Settings.BringMobs,
@@ -1032,6 +1438,86 @@ local function buildGui()
         CurrentValue = Settings.BringMax,
         Flag = "BON_BringMax",
         Callback = function(v) Settings.BringMax = v end,
+    })
+
+    -- ===== Tab Di Chuyen =====
+    local TravelTab = Window:CreateTab("Di Chuyen", 4483362458)
+    TravelTab:CreateSection("Sea hien tai")
+    TravelTab:CreateLabel("Dang o Sea " .. CURRENT_SEA .. " (PlaceId " .. game.PlaceId .. ")")
+    TravelTab:CreateLabel("Bat di chuyen se TU TAT Auto Farm de tranh 2 module danh nhau.")
+
+    local seaIslands = getSeaIslands()
+    local islandNames = {}
+    for _, is in ipairs(seaIslands) do
+        table.insert(islandNames, is.name)
+    end
+    if #islandNames > 0 and not findIslandByName(Settings.SelectedIsland) then
+        Settings.SelectedIsland = islandNames[1]
+    end
+    TravelTab:CreateSection("Chon dao")
+    if #islandNames == 0 then
+        TravelTab:CreateLabel("Khong co du lieu dao cho Sea nay.")
+    else
+        TravelTab:CreateDropdown({
+            Name = "Chon dao (chon la bay toi)",
+            Options = islandNames,
+            CurrentOption = { Settings.SelectedIsland },
+            MultipleOptions = false,
+            Flag = "BON_SelectedIsland",
+            Callback = function(option)
+                local v = type(option) == "table" and option[1] or option
+                if not v then return end
+                Settings.SelectedIsland = v
+                if Settings.IslandAFK then
+                    setStatus("Doi dao treo: " .. v)
+                else
+                    task.spawn(function()
+                        flyToIslandOnce(findIslandByName(v))
+                    end)
+                end
+            end,
+        })
+        TravelTab:CreateButton({
+            Name = "Bay toi dao (1 lan)",
+            Callback = function()
+                task.spawn(function()
+                    flyToIslandOnce(findIslandByName(Settings.SelectedIsland))
+                end)
+            end,
+        })
+    end
+
+    TravelTab:CreateSection("Bypass teleporter")
+    TravelTab:CreateLabel("Dich toi dao -> reset chet -> game nhan spawn o dao.")
+    local afkToggle = TravelTab:CreateToggle({
+        Name = "Treo dao (bypass)",
+        CurrentValue = Settings.IslandAFK,
+        Flag = "BON_IslandAFK",
+        Callback = function(v)
+            if v then
+                local island = findIslandByName(Settings.SelectedIsland)
+                if not island then
+                    setStatus("Chua chon dao")
+                    pcall(function() afkToggle:Set(false) end)
+                    Settings.IslandAFK = false
+                    return
+                end
+                Settings.IslandAFK = true
+                stopFarmForTravel("Treo dao: " .. island.name .. " (da tat Auto Farm)")
+                islandAfkLoop()
+            else
+                Settings.IslandAFK = false
+            end
+        end,
+    })
+    Module._afkToggle = afkToggle
+    TravelTab:CreateButton({
+        Name = "Bypass tele 1 lan",
+        Callback = function()
+            task.spawn(function()
+                bypassTeleportIsland(findIslandByName(Settings.SelectedIsland))
+            end)
+        end,
     })
 
     -- ===== Tab Mua Do =====
@@ -1087,8 +1573,8 @@ local function buildGui()
 
     pcall(function()
         lib:Notify({
-            Title = "BON Blox Fruits v10",
-            Content = "Da tai Rayfield UI. Trang thai nam o tab Farm.",
+            Title = "BON Blox Fruits v11",
+            Content = "Da tai Rayfield UI. Trang thai nam o tab Farm; di chuyen o tab Di Chuyen.",
             Duration = 5,
             Image = 4483362458,
         })
@@ -1099,14 +1585,18 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v10 (Rayfield). Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v11 (Rayfield). Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
     Settings.Farm = false
     Settings.AutoBuy = false
+    Settings.IslandAFK = false
+    Settings.TravelMove = false
     Flight.goal = nil
     Module._statusLabel = nil
+    Module._farmToggle = nil
+    Module._islandAfkRunning = false
     if Module._rayfield then
         pcall(function() Module._rayfield:Destroy() end)
         Module._rayfield = nil
@@ -1116,6 +1606,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v10). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v11). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
 
 return Module
