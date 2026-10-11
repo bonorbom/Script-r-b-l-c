@@ -22,6 +22,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/bonorbom/Script-r-b-l
 
 Tính năng: aimbot (Smooth/Lock, vòng FOV 10-360, wall check), ESP (box/tia/highlight/tên + khoảng cách + máu, màu theo đội, friendly màu xanh lá). Game FFA (không chia đội) thì mặc định ai cũng là địch trừ friendly.
 
+## BON Auto Bounty (tab PVP trong Blox Fruits)
+
+Từ v17, logic Auto Bounty nằm ở `scripts/bounty.lua` (tách riêng cho nhẹ) và được `scripts/bloxfruits.lua` tự tải qua loadstring — Bon chỉ cần chạy dòng loadstring Blox Fruits như cũ, không cần làm gì thêm.
+
 ## Thêm script mới
 
 1. Tạo file mới trong thư mục `scripts/`, ví dụ `scripts/myscript.lua`.
