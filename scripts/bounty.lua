@@ -149,7 +149,8 @@ local function bountyRefreshTargets()
     end
     local _, _, myHrp = getChar()
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= Player and pvpIsEnemy(plr) and not bountyPvpDisabled(plr) then
+        if plr ~= Player and pvpIsEnemy(plr) and not bountyPvpDisabled(plr)
+            and not Bounty._permBlacklist[plr] then -- bi no giet: vinh vien khong danh lai
             local bannedUntil = bountyBlacklist[plr]
             if not (bannedUntil and tick() < bannedUntil) then
                 local tc = plr.Character
@@ -212,6 +213,8 @@ local function bountyTrackTargetDamage(plr, th)
         return false
     end
     if not tr.damaged and th.Health < tr.startHP - 1 then
+        tr.damaged = true
+        Bounty._didDamage[plr] = tick() -- ghi nhan de dem kill sau nay
         Bounty._dmgTrack[plr] = nil -- da gay duoc damage: xong, xoa track
         return false
     end
@@ -821,6 +824,7 @@ local function bountyLoop()
 
             local nm = tostring(tgt.plr.DisplayName ~= "" and tgt.plr.DisplayName or tgt.plr.Name)
             setStatus("Bounty [" .. Bounty.Mode .. "]: danh " .. nm .. " (cach " .. math.floor(tgt.dist or 0) .. "m)")
+            Bounty._currentTarget = tgt.plr -- nho de xac dinh killer neu minh chet
             local res
             if Bounty.Mode == "Du kích" then
                 res = bountyEngageGuerilla(tgt)
@@ -829,14 +833,47 @@ local function bountyLoop()
             end
             if res == "safe" then
                 bountyDoSafe(tgt.plr)
+            elseif res == "dead" then
+                -- Dem kill: chi tinh khi minh co gay damage cho no trong 30s qua
+                -- (chac chan kill cua minh, khong phai thang khac kill ho).
+                -- Kill 1 nguoi >= 3 lan -> nghi 1 tieng, doi nguoi khac.
+                local lastHit = Bounty._didDamage[tgt.plr]
+                Bounty._didDamage[tgt.plr] = nil
+                if lastHit and (tick() - lastHit) < 30 then
+                    local n = (Bounty._killCount[tgt.plr] or 0) + 1
+                    Bounty._killCount[tgt.plr] = n
+                    if n >= 3 then
+                        bountyBlacklist[tgt.plr] = tick() + 3600
+                        setStatus("Bounty: da kill " .. nm .. " 3 lan -> tha, doi nguoi khac")
+                    else
+                        setStatus("Bounty: da kill " .. nm .. " (" .. n .. "/3)")
+                    end
+                end
+                Bounty._currentTarget = nil
             elseif res == "me-dead" then
+                -- Bi giet: DAM BAO tay no giet moi blacklist vinh vien:
+                -- dang engage no + minh an damage trong 5s qua + no con song
+                -- (chet khi dang solo voi no thi 99% la no giet).
+                local killer = Bounty._currentTarget
+                local recentDmg = (tick() - (Bounty._tookDamageAt or 0)) < 5
+                if killer and killer.Parent and recentDmg then
+                    local _, kh = bountyTargetParts(killer)
+                    if kh and kh.Health > 0 then
+                        Bounty._permBlacklist[killer] = true
+                        Bounty._dmgTrack[killer] = nil
+                        setStatus("Bounty: bi " .. tostring(killer.Name) .. " giet -> blacklist vinh vien")
+                    end
+                end
+                Bounty._currentTarget = nil
                 task.wait(2)
             elseif res == "nodamage" then
                 -- 60s khong gay duoc damage: coi nhu duoi 20, blacklist 5 phut
                 bountyBlacklist[tgt.plr] = tick() + 300
                 Bounty._dmgTrack[tgt.plr] = nil
+                Bounty._currentTarget = nil
             elseif res == "far" or res == "timeout" then
                 bountyBlacklist[tgt.plr] = tick() + 180 -- blacklist 3 phut roi thu lai
+                Bounty._currentTarget = nil
             end
             refreshT = 0 -- dead/far/timeout -> refresh bang ngay de doi target
         end)
