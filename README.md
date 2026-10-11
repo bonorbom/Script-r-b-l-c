@@ -12,6 +12,16 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/bonorbom/Script-r-b-l
 
 Loader sẽ tự tải các script trong danh sách `SCRIPTS` ở `main.lua`.
 
+## BON PVP Universal (aimbot + ESP cho mọi game)
+
+Bản PVP tách riêng, không phụ thuộc Blox Fruits — xài cho game bắn súng hay bất kỳ game nào:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/bonorbom/Script-r-b-l-c/main/scripts/pvp-universal.lua"))()
+```
+
+Tính năng: aimbot (Smooth/Lock, vòng FOV 10-360, wall check), ESP (box/tia/highlight/tên + khoảng cách + máu, màu theo đội, friendly màu xanh lá). Game FFA (không chia đội) thì mặc định ai cũng là địch trừ friendly.
+
 ## Thêm script mới
 
 1. Tạo file mới trong thư mục `scripts/`, ví dụ `scripts/myscript.lua`.
