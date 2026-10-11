@@ -1,4 +1,8 @@
--- BON Blox Fruits Auto Farm (v13)
+-- BON Blox Fruits Auto Farm (v14)
+-- v14: fix triet de loi day chuyen: moi thread travel chay trong travelProtected
+-- (chet giua chung van tat co TravelMove, farm khong bao gio ket); nil-guard V() va
+-- nearestSeaIsland; di chuyen thu cong thi AFK tu doi theo dao moi (khong danh nhau);
+-- farmLoop gap loi la don co travel ngay.
 -- v13: fix ket "dang bay" (endTravel race-safe theo gen, toi noi tinh theo chieu ngang
 -- bo qua Y, them nut "Dung di chuyen"); bypass kieu Banana Hub: xa >5000 thi bay
 -- ap sat ~1500 truoc roi moi spam CFrame nhieu lan + reset, co verify dich chuyen.
@@ -250,11 +254,18 @@ local function findIslandByName(name)
 end
 
 local function nearestSeaIsland(pos)
+    if not pos then
+        return nil, math.huge
+    end
     local best, bestDist = nil, math.huge
     for _, is in ipairs(getSeaIslands()) do
-        local d = (V(is.pos) - pos).Magnitude
-        if d < bestDist then
-            best, bestDist = is, d
+        if is and is.pos then
+            local ok, d = pcall(function()
+                return (V(is.pos) - pos).Magnitude
+            end)
+            if ok and d and d < bestDist then
+                best, bestDist = is, d
+            end
         end
     end
     return best, bestDist
@@ -271,7 +282,10 @@ local RegisterAttack = NetFolder and NetFolder:WaitForChild("RE/RegisterAttack",
 local RegisterHit = NetFolder and NetFolder:WaitForChild("RE/RegisterHit", 5)
 
 local function V(t)
-    return Vector3.new(t[1], t[2], t[3])
+    if type(t) ~= "table" then
+        return Vector3.zero
+    end
+    return Vector3.new(t[1] or 0, t[2] or 0, t[3] or 0)
 end
 
 -- Khoang cach theo chieu ngang (bo qua Y): toi noi thi Y lech chut van tinh la toi
@@ -684,19 +698,42 @@ local function bypassTeleportIsland(island, gen)
     return false
 end
 
--- Cua chung cho GUI: lenh di chuyen moi huy ngay chuyen cu dang chay
+-- Chay 1 chuyen travel trong pcall: DU thread chet giua chung vi loi gi di nua
+-- thi co TravelMove van duoc tat -> Auto Farm khong bao gio ket "dang bay".
+local function travelProtected(gen, fn)
+    local ok, err = pcall(fn)
+    endTravel(gen)
+    if not ok then
+        setStatus("Di chuyen loi, da dung: " .. tostring(err))
+    end
+end
+
+-- Cua chung cho GUI: lenh di chuyen moi huy ngay chuyen cu dang chay.
+-- Di chuyen thu cong thi tat Auto Farm 1 lan (bat lai sau khi toi noi van chay
+-- binh thuong) va tat Treo dao de chi 1 module dieu khien nhan vat 1 luc.
 local function requestTravelToIsland(island, useBypass)
     if not island then
         setStatus("Chua chon dao")
         return
     end
+    if Settings.IslandAFK then
+        Settings.IslandAFK = false
+        pcall(function()
+            if Module._afkToggle then
+                Module._afkToggle:Set(false)
+            end
+        end)
+        setStatus("Da tat Treo dao (di chuyen thu cong)")
+    end
     local gen = bumpTravelGen()
     task.spawn(function()
-        if useBypass then
-            bypassTeleportIsland(island, gen)
-        else
-            flyToIslandOnce(island, gen)
-        end
+        travelProtected(gen, function()
+            if useBypass then
+                bypassTeleportIsland(island, gen)
+            else
+                flyToIslandOnce(island, gen)
+            end
+        end)
     end)
 end
 
@@ -724,7 +761,10 @@ local function islandAfkLoop()
                 end
                 local near, dist = nearestSeaIsland(hrp.Position)
                 if not near or near.name ~= island.name or dist > 350 then
-                    local res = bypassTeleportIsland(island, Module._travelGen)
+                    local res = nil
+                    travelProtected(Module._travelGen, function()
+                        res = bypassTeleportIsland(island, Module._travelGen)
+                    end)
                     if res == "aborted" then
                         -- Bon doi dao giua chung: bo qua, vong sau lay dao moi
                     elseif res then
@@ -1405,6 +1445,10 @@ local function farmLoop()
         end)
         if not ok then
             setStatus("Loi nhe, thu lai: " .. tostring(err))
+            -- Don co travel neu co thread chet giua chung: tranh ket "dang bay"
+            Settings.TravelMove = false
+            Module._farmTravel = false
+            Flight.goal = nil
             task.wait(1)
         end
         task.wait(0.1)
@@ -1479,7 +1523,7 @@ local function buildGui()
     if not lib then return nil end
 
     local Window = lib:CreateWindow({
-        Name = "BON - Blox Fruits v13",
+        Name = "BON - Blox Fruits v14",
         LoadingTitle = "BON Blox Fruits",
         LoadingSubtitle = "Rayfield UI",
         ConfigurationSaving = {
@@ -1727,7 +1771,7 @@ local function buildGui()
 
     pcall(function()
         lib:Notify({
-            Title = "BON Blox Fruits v13",
+            Title = "BON Blox Fruits v14",
             Content = "Da tai Rayfield UI. Trang thai nam o tab Farm; di chuyen o tab Di Chuyen.",
             Duration = 5,
             Image = 4483362458,
@@ -1739,7 +1783,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v13 (Rayfield). Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v14 (Rayfield). Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -1760,6 +1804,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v13). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v14). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
 
 return Module
