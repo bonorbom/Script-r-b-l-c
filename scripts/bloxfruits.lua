@@ -1,4 +1,7 @@
--- BON Blox Fruits Auto Farm (v12)
+-- BON Blox Fruits Auto Farm (v13)
+-- v13: fix ket "dang bay" (endTravel race-safe theo gen, toi noi tinh theo chieu ngang
+-- bo qua Y, them nut "Dung di chuyen"); bypass kieu Banana Hub: xa >5000 thi bay
+-- ap sat ~1500 truoc roi moi spam CFrame nhieu lan + reset, co verify dich chuyen.
 -- v12: doi dao giua chung dang bay thi HUY chuyen cu, bay ngay sang dao moi
 -- (travel generation token); them toc do bay rieng cho di chuyen 100-350.
 -- v11: them tab Di Chuyen: tu nhan Sea hien tai -> dropdown danh sach dao cua Sea do,
@@ -271,6 +274,11 @@ local function V(t)
     return Vector3.new(t[1], t[2], t[3])
 end
 
+-- Khoang cach theo chieu ngang (bo qua Y): toi noi thi Y lech chut van tinh la toi
+local function flatDist(a, b)
+    return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
 local function getChar()
     local char = Player.Character
     if not char then return nil, nil, nil end
@@ -391,15 +399,16 @@ local function flyGoalTo(pos, timeout, arriveDist)
 end
 
 -- Bay duong dai: leo len cao truoc roi moi ha xuong, tranh xuyen dao/dia hinh
-local function flyToSmart(pos, timeout)
+local function flyToSmart(pos, timeout, arriveDist)
     local _, _, hrp = getChar()
     if not hrp then return false end
     timeout = timeout or 60
+    arriveDist = arriveDist or 6
     local cruise = Vector3.new(pos.X, math.max(hrp.Position.Y, pos.Y) + 150, pos.Z)
     if (cruise - hrp.Position).Magnitude > 30 then
-        flyGoalTo(cruise, timeout * 0.5, 25)
+        flyGoalTo(cruise, timeout * 0.5, math.max(arriveDist, 25))
     end
-    return flyGoalTo(pos, timeout * 0.6, 6)
+    return flyGoalTo(pos, timeout * 0.6, arriveDist)
 end
 
 -- ===== Di chuyen toi dao (tab Di Chuyen) =====
@@ -433,14 +442,21 @@ local function stopFarmForTravel(reason)
     end
 end
 
-local function endTravel()
-    Settings.TravelMove = false
+local function endTravel(gen)
+    -- Chi tat co TravelMove khi chuyen nay van la moi nhat (tranh race:
+    -- chuyen cu bi huy khong duoc tat co cua chuyen moi dang chay)
+    if gen == nil or Module._travelGen == gen then
+        Settings.TravelMove = false
+    end
     Flight.goal = nil
 end
 
 -- Bay muot rieng cho travel (khong phu thuoc Settings.Farm)
-local function travelFlyTo(pos, timeout, gen)
+-- stopDist: dung som khi con cach dich stopDist (dung cho kieu ap sat roi bypass)
+local function travelFlyTo(pos, timeout, gen, stopDist)
     timeout = timeout or 120
+    stopDist = stopDist or 10
+    local arriveAt = math.max(stopDist, 25)
     local t0 = tick()
     local last = tick()
     while sessionAlive() and Settings.TravelMove and not travelStale(gen) and (tick() - t0) < timeout do
@@ -448,7 +464,7 @@ local function travelFlyTo(pos, timeout, gen)
         if not hrp or not hum or hum.Health <= 0 then
             task.wait(0.5)
         else
-            if (pos - hrp.Position).Magnitude <= 10 then
+            if flatDist(pos, hrp.Position) <= arriveAt then
                 return true
             end
             pcall(function()
@@ -466,7 +482,7 @@ local function travelFlyTo(pos, timeout, gen)
         end
     end
     local _, _, hrp = getChar()
-    return hrp ~= nil and (pos - hrp.Position).Magnitude <= 12
+    return hrp ~= nil and flatDist(pos, hrp.Position) <= arriveAt + 10
 end
 
 local function waitRespawn(timeout)
@@ -490,6 +506,9 @@ local function resetCharacterOnce()
         return false
     end
     pcall(function()
+        hum:ChangeState(Enum.HumanoidStateType.Dead)
+    end)
+    pcall(function()
         hum.Health = 0
     end)
     local t0 = tick()
@@ -505,16 +524,29 @@ local function resetCharacterOnce()
     return hrp ~= nil
 end
 
-local function directTeleport(pos)
+-- Dich chuyen kieu Banana: spam CFrame nhieu lan lien tiep de server nhan dan
+-- goi tin "player dang o dao", roi verify nhan vat co di chuyen that khong.
+local function directTeleport(pos, gen)
     local _, _, hrp = getChar()
     if not hrp then
         return false
     end
-    pcall(function()
-        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 12, 0))
-    end)
-    task.wait(0.8)
-    return true
+    local dest = CFrame.new(pos + Vector3.new(0, 12, 0))
+    for i = 1, 8 do
+        if travelStale(gen) then
+            return false
+        end
+        local _, _, h = getChar()
+        if not h then
+            return false
+        end
+        pcall(function()
+            h.CFrame = dest
+        end)
+        task.wait(0.15)
+    end
+    local _, _, h2 = getChar()
+    return h2 ~= nil and flatDist(pos, h2.Position) <= 600
 end
 
 -- Bay 1 lan toi dao; dap nham dao thi bay lai (toi da 3 vong).
@@ -528,6 +560,7 @@ local function flyToIslandOnce(island, gen)
     local target = V(island.pos)
     for round = 1, 3 do
         if travelStale(gen) then
+            endTravel(gen)
             return "aborted"
         end
         if not sessionAlive() or not Settings.TravelMove then
@@ -539,24 +572,26 @@ local function flyToIslandOnce(island, gen)
             local near = hrp and nearestSeaIsland(hrp.Position)
             if near and near.name == island.name then
                 setStatus("Da toi " .. island.name)
-                endTravel()
+                endTravel(gen)
                 return true
             end
             setStatus("Dap nham " .. (near and near.name or "?") .. ", bay lai y het")
         else
             if travelStale(gen) then
+                endTravel(gen)
                 return "aborted"
             end
             setStatus("Bay chua toi " .. island.name .. ", thu lai")
         end
         task.wait(0.5)
     end
-    endTravel()
+    endTravel(gen)
     setStatus("Bay that bai: " .. island.name)
     return false
 end
 
--- Bypass teleporter: dich toi dao -> reset chet -> game nhan spawn o dao.
+-- Bypass teleporter kieu Banana Hub: neu cach xa >5000 thi bay ap sat ~1500 truoc,
+-- roi spam CFrame nhieu lan + reset chet de server nhan "player dang o dao".
 -- Reset 2 lan lien tiep khong duoc thi chuyen sang bay; dap nham dao thi lam lai y het.
 -- Tra ve "aborted" neu co lenh di chuyen moi hon (doi dao giua chung).
 local function bypassTeleportIsland(island, gen)
@@ -568,40 +603,61 @@ local function bypassTeleportIsland(island, gen)
     local target = V(island.pos)
     for round = 1, 3 do
         if travelStale(gen) then
+            endTravel(gen)
             return "aborted"
         end
         if not sessionAlive() or not Settings.TravelMove then
             return false
         end
-        setStatus("Bypass (" .. round .. "/3): dich toi " .. island.name)
-        directTeleport(target)
-        local ok = false
-        for i = 1, 2 do
+        local _, _, hrp0 = getChar()
+        local dist0 = hrp0 and (target - hrp0.Position).Magnitude or math.huge
+        if dist0 > 5000 then
+            setStatus("Bypass (" .. round .. "/3): bay ap sat " .. island.name .. "...")
+            travelFlyTo(target, 120, gen, 1500)
             if travelStale(gen) then
+                endTravel(gen)
                 return "aborted"
             end
             if not sessionAlive() or not Settings.TravelMove then
                 return false
             end
-            setStatus("Bypass: reset lan " .. i .. " tai " .. island.name)
-            if resetCharacterOnce() then
-                local _, _, hrp = getChar()
-                if hrp then
-                    local near, dist = nearestSeaIsland(hrp.Position)
-                    if near and near.name == island.name and dist <= 350 then
-                        ok = true
-                        break
+        end
+        setStatus("Bypass (" .. round .. "/3): spam vi tri + reset tai " .. island.name)
+        local ok = false
+        for i = 1, 2 do
+            if travelStale(gen) then
+                endTravel(gen)
+                return "aborted"
+            end
+            if not sessionAlive() or not Settings.TravelMove then
+                return false
+            end
+            if directTeleport(target, gen) then
+                if resetCharacterOnce() then
+                    -- Sau hoi sinh spam lai vi tri dao 1 dot nua
+                    directTeleport(target, gen)
+                    task.wait(0.5)
+                    local _, _, hrp = getChar()
+                    if hrp then
+                        local near, dist = nearestSeaIsland(hrp.Position)
+                        if near and near.name == island.name and dist <= 600 then
+                            ok = true
+                            break
+                        end
+                        setStatus("Bypass: sau reset dang o " .. (near and near.name or "?") .. ", thu lai")
                     end
-                    setStatus("Bypass: sau reset dang o " .. (near and near.name or "?") .. ", thu lai")
+                else
+                    setStatus("Bypass: khong hoi sinh duoc, doi chut...")
+                    task.wait(1)
                 end
             else
-                setStatus("Bypass: khong hoi sinh duoc, doi chut...")
-                task.wait(1)
+                setStatus("Bypass: dich chuyen khong an, thu lai...")
+                task.wait(0.5)
             end
         end
         if ok then
             setStatus("Bypass OK: da o " .. island.name)
-            endTravel()
+            endTravel(gen)
             return true
         end
         setStatus("Bypass: reset 2 lan khong xong, chuyen sang bay...")
@@ -610,19 +666,20 @@ local function bypassTeleportIsland(island, gen)
             local near = hrp and nearestSeaIsland(hrp.Position)
             if near and near.name == island.name then
                 setStatus("Bay OK: da toi " .. island.name)
-                endTravel()
+                endTravel(gen)
                 return true
             end
             setStatus("Bay dap nham " .. (near and near.name or "?") .. ", lam lai y het")
         else
             if travelStale(gen) then
+                endTravel(gen)
                 return "aborted"
             end
             setStatus("Bay khong toi duoc " .. island.name .. ", thu lai")
         end
         task.wait(1)
     end
-    endTravel()
+    endTravel(gen)
     setStatus("Bypass that bai: khong toi duoc " .. island.name)
     return false
 end
@@ -723,8 +780,20 @@ local function farmTravelToIsland(target, label)
         if not sessionAlive() or not Settings.Farm then
             break
         end
+        local _, _, hrp0 = getChar()
+        local dist0 = hrp0 and (target - hrp0.Position).Magnitude or math.huge
+        if dist0 > 5000 then
+            -- Kieu Banana: bay ap sat dao truoc roi moi bypass
+            setStatus("Farm: bay ap sat " .. label .. "...")
+            flyToSmart(target, 90, 1500)
+            if travelStale(gen) then
+                break
+            end
+            if not sessionAlive() or not Settings.Farm then
+                break
+            end
+        end
         setStatus("Farm: bypass toi " .. label .. " (" .. round .. "/3)")
-        directTeleport(target)
         local ok = false
         for i = 1, 2 do
             if travelStale(gen) then
@@ -733,13 +802,17 @@ local function farmTravelToIsland(target, label)
             if not sessionAlive() or not Settings.Farm then
                 break
             end
-            if resetCharacterOnce() then
-                local _, _, hrp = getChar()
-                if hrp then
-                    local near, dist = nearestSeaIsland(hrp.Position)
-                    if near and expected and near.name == expected.name and dist <= 350 then
-                        ok = true
-                        break
+            if directTeleport(target, gen) then
+                if resetCharacterOnce() then
+                    directTeleport(target, gen)
+                    task.wait(0.5)
+                    local _, _, hrp = getChar()
+                    if hrp then
+                        local near, dist = nearestSeaIsland(hrp.Position)
+                        if near and expected and near.name == expected.name and dist <= 600 then
+                            ok = true
+                            break
+                        end
                     end
                 end
             end
@@ -763,7 +836,7 @@ local function farmTravelToIsland(target, label)
         setStatus("Farm: chua toi dung dao, lam lai teleporter...")
         task.wait(1)
     end
-    Settings.TravelMove = false
+    endTravel(gen)
     Module._farmTravel = false
     if okAll then
         setStatus("Farm: da toi " .. label)
@@ -1406,7 +1479,7 @@ local function buildGui()
     if not lib then return nil end
 
     local Window = lib:CreateWindow({
-        Name = "BON - Blox Fruits v12",
+        Name = "BON - Blox Fruits v13",
         LoadingTitle = "BON Blox Fruits",
         LoadingSubtitle = "Rayfield UI",
         ConfigurationSaving = {
@@ -1553,6 +1626,22 @@ local function buildGui()
         Flag = "BON_TravelSpeed",
         Callback = function(v) Settings.TravelSpeed = v end,
     })
+    TravelTab:CreateButton({
+        Name = "Dung di chuyen (huy chuyen dang chay)",
+        Callback = function()
+            bumpTravelGen() -- huy moi chuyen di chuyen dang chay
+            Settings.TravelMove = false
+            Settings.IslandAFK = false
+            pcall(function()
+                if Module._afkToggle then
+                    Module._afkToggle:Set(false)
+                end
+            end)
+            Flight.goal = nil
+            Module._farmTravel = false
+            setStatus("Da dung di chuyen")
+        end,
+    })
 
     TravelTab:CreateSection("Bypass teleporter")
     TravelTab:CreateLabel("Dich toi dao -> reset chet -> game nhan spawn o dao.")
@@ -1638,7 +1727,7 @@ local function buildGui()
 
     pcall(function()
         lib:Notify({
-            Title = "BON Blox Fruits v12",
+            Title = "BON Blox Fruits v13",
             Content = "Da tai Rayfield UI. Trang thai nam o tab Farm; di chuyen o tab Di Chuyen.",
             Duration = 5,
             Image = 4483362458,
@@ -1650,7 +1739,7 @@ end
 function Module.Start()
     if Module._gui then return end
     Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v12 (Rayfield). Level hien tai: " .. tostring(Level.Value))
+    print("[BloxFruits] Da tai GUI v13 (Rayfield). Level hien tai: " .. tostring(Level.Value))
 end
 
 function Module.Stop()
@@ -1671,6 +1760,6 @@ function Module.Stop()
 end
 
 Module.Start()
-print("[BloxFruits] San sang (v12). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
+print("[BloxFruits] San sang (v13). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
 
 return Module
