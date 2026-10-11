@@ -29,12 +29,13 @@ local pvpHideESP, pvpDestroyESP = C.pvpHideESP, C.pvpDestroyESP
 --
 -- DATA RESEARCH (ground truth):
 -- 1. Bounty rule (wiki): KHONG nhan bounty khi target duoi 75% level cua minh
---    (max 2800 -> minh 2800 thi chi danh nguoi >= 2100). MOT CHIEU, KHONG cap tren
---    (wiki khong co cap tren -> khong them myLv*1.34).
---    PvP mo tu lv 20 -> skip target lv < 20. Marines khong danh duoc Marines; allied
---    (ket dong minh) khong gay damage — game KHONG expose ally qua code nen KHONG
---    detect duoc (limitation): danh khong vao mau thi target tu bi loai sau timeout.
---    Doc level: Player.Data.Level (IntValue) + pcall; khong doc duoc thi SKIP an toan.
+--    (max 2800 -> minh 2800 thi chi danh nguoi >= 2100). NHUNG game khong cho doc
+--    lv nguoi khac (Data.Level khong replicate) -> KHONG loc level truoc duoc.
+--    Quy tac moi (y Bon): danh TAT CA dich; sau 60s engage ma target khong mat
+--    mau nao tu user -> coi nhu duoi 20 -> blacklist 5 phut, doi target khac.
+--    PvP mo tu lv 20 (giu gate cho chinh user). Marines khong danh duoc Marines;
+--    allied (ket dong minh) khong gay damage — game KHONG expose ally qua code
+--    (limitation): danh khong vao mau thi target tu bi loai sau 60s.
 -- 2. Chieu: phim Z/X/C/V qua VirtualInputManager:SendKeyEvent(true/false, KeyCode, false, game).
 --    Cooldown KHONG doc duoc tu game -> timer tay theo so lieu wiki (BOUNTY_CD).
 --    Tam danh (studs) KHONG verify duoc -> default bao thu theo nhom vu khi, cho override.
@@ -129,11 +130,10 @@ local function bountyReadLevel(plr)
     return nil
 end
 
--- Quet + sap xep bang target: skip lv<20, skip lv < 75% lv minh (1 chieu, KHONG cap
--- tren), skip friendly/cung team (tai dung pvpIsEnemy), skip PvpDisabled (pcall),
--- skip target dang blacklist ("far"/"timeout" vai phut). Uu tien level GAN user nhat
--- (sort theo level, KHONG sort theo khoang cach — theo spec). Refresh dinh ky + khi
--- target chet/roi.
+-- Quet + sap xep bang target: DANH TAT CA dich (khong loc level target nua vi game
+-- khong cho doc lv nguoi khac), sort theo khoang cach gan nhat. Ai sau 60s engage
+-- ma khong mat mau nao thi blacklist 5 phut (coi nhu duoi 20). Skip friendly/cung
+-- team (pvpIsEnemy), PvpDisabled, blacklist. Refresh dinh ky + khi target chet/roi.
 local function bountyRefreshTargets()
     local list = {}
     local myLv = bountyReadLevel(Player)
@@ -141,25 +141,28 @@ local function bountyRefreshTargets()
         Bounty.Targets = list
         return list
     end
+    -- Don track damage cua player da roi game
+    for plr, _ in pairs(Bounty._dmgTrack) do
+        if not plr.Parent then
+            Bounty._dmgTrack[plr] = nil
+        end
+    end
+    local _, _, myHrp = getChar()
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= Player and pvpIsEnemy(plr) and not bountyPvpDisabled(plr) then
             local bannedUntil = bountyBlacklist[plr]
             if not (bannedUntil and tick() < bannedUntil) then
-                local lv = bountyReadLevel(plr)
-                if lv and lv >= BOUNTY_PVP_MIN_LV and lv >= myLv * 0.75 then
-                    local tc = plr.Character
-                    local th = tc and tc:FindFirstChildOfClass("Humanoid")
-                    local tr = tc and tc:FindFirstChild("HumanoidRootPart")
-                    if th and tr and th.Health > 0 then
-                        table.insert(list, { plr = plr, level = lv })
-                    end
+                local tc = plr.Character
+                local th = tc and tc:FindFirstChildOfClass("Humanoid")
+                local tr = tc and tc:FindFirstChild("HumanoidRootPart")
+                if th and tr and th.Health > 0 then
+                    local d = (myHrp and tr.Position) and (tr.Position - myHrp.Position).Magnitude or math.huge
+                    table.insert(list, { plr = plr, dist = d })
                 end
             end
         end
     end
-    table.sort(list, function(a, b)
-        return math.abs(myLv - a.level) < math.abs(myLv - b.level)
-    end)
+    table.sort(list, function(a, b) return a.dist < b.dist end)
     Bounty.Targets = list
     return list
 end
@@ -195,6 +198,27 @@ end
 
 local function bountyInterrupted()
     return (tick() - (Bounty._tookDamageAt or 0)) < 0.5
+end
+
+-- Anti "duoi 20" (y Bon): game khong cho doc lv nguoi khac nen khong loc truoc.
+-- Sau 60s engage ma target khong mat mau nao tu user -> coi nhu duoi 20 ->
+-- tra ve true de doi target + blacklist.
+local function bountyTrackTargetDamage(plr, th)
+    if not th then return false end
+    local tr = Bounty._dmgTrack[plr]
+    if not tr then
+        tr = { t0 = tick(), startHP = th.Health, damaged = false }
+        Bounty._dmgTrack[plr] = tr
+        return false
+    end
+    if not tr.damaged and th.Health < tr.startHP - 1 then
+        Bounty._dmgTrack[plr] = nil -- da gay duoc damage: xong, xoa track
+        return false
+    end
+    if not tr.damaged and (tick() - tr.t0) > 60 then
+        return true -- het 60s khong gay duoc damage
+    end
+    return false
 end
 
 -- Nhan dien tool dang cam -> key chuan de tra cooldown
@@ -594,6 +618,10 @@ local function bountyEngageBasic(tgt)
         if not plr.Parent or not th or not thrp or th.Health <= 0 then return "dead" end
         if not char or not hum or not hrp or hum.Health <= 0 then return "me-dead" end
         if bountySafeNeeded() then return "safe" end
+        if bountyTrackTargetDamage(plr, th) then
+            setStatus("Bounty: " .. tostring(plr.Name) .. " 60s khong mat mau (coi nhu duoi 20), doi target...")
+            return "nodamage"
+        end
 
         local tool = bountyEnsureTool()
         local range = bountySkillRange(tool)
@@ -697,6 +725,10 @@ local function bountyEngageGuerilla(tgt)
         if not plr.Parent or not th or not thrp or th.Health <= 0 then return "dead" end
         if not char or not hum or not hrp or hum.Health <= 0 then return "me-dead" end
         if bountySafeNeeded() then return "safe" end
+        if bountyTrackTargetDamage(plr, th) then
+            setStatus("Bounty: " .. tostring(plr.Name) .. " 60s khong mat mau (coi nhu duoi 20), doi target...")
+            return "nodamage"
+        end
 
         -- Ap sat
         Bounty.CastPhase = false
@@ -766,7 +798,7 @@ local function bountyLoop()
                 if myLv < BOUNTY_PVP_MIN_LV then
                     setStatus("Bounty: can lv 20+ moi PVP (hien tai lv " .. tostring(myLv) .. ")")
                 else
-                    setStatus("Bounty: khong co target hop le (lv>=20, lv>=75% lv minh)")
+                    setStatus("Bounty: khong thay dich xung quanh")
                 end
                 Flight.goal = nil
                 task.wait(2)
@@ -788,7 +820,7 @@ local function bountyLoop()
             end
 
             local nm = tostring(tgt.plr.DisplayName ~= "" and tgt.plr.DisplayName or tgt.plr.Name)
-            setStatus("Bounty [" .. Bounty.Mode .. "]: danh " .. nm .. " (Lv" .. tostring(tgt.level) .. ")")
+            setStatus("Bounty [" .. Bounty.Mode .. "]: danh " .. nm .. " (cach " .. math.floor(tgt.dist or 0) .. "m)")
             local res
             if Bounty.Mode == "Du kích" then
                 res = bountyEngageGuerilla(tgt)
@@ -799,6 +831,10 @@ local function bountyLoop()
                 bountyDoSafe(tgt.plr)
             elseif res == "me-dead" then
                 task.wait(2)
+            elseif res == "nodamage" then
+                -- 60s khong gay duoc damage: coi nhu duoi 20, blacklist 5 phut
+                bountyBlacklist[tgt.plr] = tick() + 300
+                Bounty._dmgTrack[tgt.plr] = nil
             elseif res == "far" or res == "timeout" then
                 bountyBlacklist[tgt.plr] = tick() + 180 -- blacklist 3 phut roi thu lai
             end
