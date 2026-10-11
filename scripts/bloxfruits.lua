@@ -1,4 +1,7 @@
--- BON Blox Fruits Auto Farm (v16)
+-- BON Blox Fruits Auto Farm (v17)
+-- v17: them Auto Bounty (tab PVP): tu tim target theo bounty rule (lv>=20, chenh <25%),
+-- 2 mode Basic (legit) / Du kich, safe HP, anti-stun, toggle Auto Haki (Ken + Buso).
+-- Xung dot Farm/Bounty/Aimbot: CHAN + BAO LOI (neu ten module dang chay), khong tu tat.
 -- v16: them tab PVP (aimbot + ESP).
 -- v15: fix theo audit subagent: bat farm thi tu tat Treo dao (C1); dong nhat nguong
 -- "lac dao" 600 cho AFK (H1); pcall cho luong fly heartbeat (H2); nut Dung di chuyen
@@ -98,8 +101,31 @@ local Settings = {
     TravelSpeed = 200,    -- toc do bay rieng cho di chuyen (100-350, slider tab Di Chuyen)
     IslandAFK = false,    -- treo dao kieu bypass teleporter
     SelectedIsland = nil, -- ten dao dang chon trong tab Di Chuyen
+    Bounty = false,       -- v17: master switch Auto Bounty (luong fly chay khi true)
 }
 Module.Settings = Settings
+
+-- ===== AUTO BOUNTY: state khai bao som (luong fly/noclip ben duoi can doc) =====
+-- Logic day du nam o section "-- ===== AUTO BOUNTY (v17) =====" gan tab PVP.
+local Bounty = {
+    Enabled = false,
+    Mode = "Basic (legit)", -- "Basic (legit)" | "Du kích"
+    SafeHP = 30,            -- % mau -> bat che do safe
+    SafeHeight = 3000,      -- do cao safe so voi target (studs)
+    WaitHeight = 200,       -- do cao cho hoi chieu (studs)
+    HoldTime = 0.5,         -- giay giu phim cho chieu hold-variant
+    RangeOverride = 0,      -- tam chieu override; 0 = tu dong theo nhom vu khi
+    Targets = {},           -- bang target {plr, level}, sap xep theo level gan user nhat
+    Running = false,        -- vong bountyLoop dang chay
+    Gen = 0,                -- tang moi lan bat/tat de huy vong cu (chong ket co)
+    CastPhase = false,      -- true = dang cast: TAT fly, tha vat ly, tat noclip
+    StunPauses = 0,         -- dem so lan pause vi nghi stun
+    AutoHaki = false,       -- v17: tu bat lai Ken + Buso khi bounty chay
+    _lastHP = nil,          -- theo doi damage (Held Skill Interruption)
+    _tookDamageAt = 0,
+    _probeChar = nil,       -- character da hook stun-probe
+}
+Module.Bounty = Bounty
 
 -- ===== Du lieu quest =====
 -- {Level, Mob, QuestId, ChiSo, NPC giao quest, ToaDoNPC{x,y,z}, ToaDoQuai{x,y,z}}
@@ -390,14 +416,18 @@ task.spawn(function()
     while sessionAlive() do
         local ok, err = pcall(function()
             local dt = RunService.Heartbeat:Wait()
-            if Settings.Farm then
+            if Settings.Farm or Settings.Bounty then
                 local _, hum, hrp = getChar()
                 if hrp and hum and hum.Health > 0 then
                     if Flight.goal then
-                        flyStep(Flight.goal, dt)
+                        -- Bounty dung chung toc do bay travel (slider tab Di Chuyen)
+                        flyStep(Flight.goal, dt, Settings.Bounty and Settings.TravelSpeed or nil)
                     end
                     -- Giu nhan vat khong tut xuong du da toi muc tieu
-                    pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+                    -- (tru luc bounty dang cast: TAT fly, tha cho game tinh vat ly)
+                    if not (Settings.Bounty and Bounty.CastPhase) then
+                        pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+                    end
                 end
             end
         end)
@@ -741,6 +771,11 @@ end
 -- Di chuyen thu cong thi tat Auto Farm 1 lan (bat lai sau khi toi noi van chay
 -- binh thuong) va tat Treo dao de chi 1 module dieu khien nhan vat 1 luc.
 local function requestTravelToIsland(island, useBypass)
+    -- Guard 2 chieu (spec): Auto Bounty dang bat -> CHAN + BAO LOI, khong tu tat bounty
+    if Settings.Bounty then
+        setStatus("Không di chuyển được vì Auto Bounty đang bật")
+        return
+    end
     if not island then
         setStatus("Chua chon dao")
         return
@@ -1519,7 +1554,9 @@ end
 
 -- Noclip khi farm (tranh ket tuong/san)
 RunService.Stepped:Connect(function()
-    if not Settings.Farm then return end
+    if not (Settings.Farm or Settings.Bounty) then return end
+    -- Bounty luc cast: TAT fly, tha cho game tinh vat ly -> tat noclip de con dung duoc tren san
+    if Settings.Bounty and Bounty.CastPhase then return end
     local char = Player.Character
     if char then
         for _, p in ipairs(char:GetDescendants()) do
@@ -1830,462 +1867,35 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- ===== GUI Rayfield =====
-local RayfieldLib = nil
-local function loadRayfield()
-    if RayfieldLib then return RayfieldLib end
-    local urls = {
-        "https://sirius.menu/rayfield",
-        "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
-    }
-    for _, url in ipairs(urls) do
-        local ok, lib = pcall(function()
-            local src = game:HttpGet(url)
-            local fn = loadstring(src)
-            assert(fn, "Rayfield compile fail")
-            return fn()
-        end)
-        if ok and lib then
-            RayfieldLib = lib
-            return lib
-        end
-    end
-    warn("[BloxFruits] Khong tai duoc Rayfield UI (executor/ket noi chan HttpGet).")
-    return nil
-end
-
-local function buildGui()
-    local lib = loadRayfield()
-    if not lib then return nil end
-
-    local Window = lib:CreateWindow({
-        Name = "BON - Blox Fruits v16",
-        LoadingTitle = "BON Blox Fruits",
-        LoadingSubtitle = "Rayfield UI",
-        ConfigurationSaving = {
-            Enabled = false,
-        },
-        Discord = {
-            Enabled = false,
-            Invite = "noinvitelink",
-            RememberJoins = true,
-        },
-        KeySystem = false,
-    })
-    Module._rayfield = lib
-    Module._window = Window
-
-    -- ===== Tab Farm =====
-    local FarmTab = Window:CreateTab("Farm", 4483362458)
-    FarmTab:CreateSection("Trang thai")
-    local statusLabel = FarmTab:CreateLabel("Trang thai: " .. statusText)
-    Module._statusLabel = statusLabel
-
-    FarmTab:CreateSection("Auto Farm")
-    local farmToggle = FarmTab:CreateToggle({
-        Name = "Auto Farm",
-        CurrentValue = Settings.Farm,
-        Flag = "BON_AutoFarm",
-        Callback = function(v)
-            if v and Settings.TravelMove then
-                setStatus("Dang di chuyen, khong bat Auto Farm cung luc")
-                pcall(function() farmToggle:Set(false) end)
-                Settings.Farm = false
-                return
-            end
-            if v and Settings.IslandAFK then
-                -- Khong de AFK va farm chay song song (AFK se giet farm va keo ve dao cu)
-                Settings.IslandAFK = false
-                pcall(function()
-                    if Module._afkToggle then
-                        Module._afkToggle:Set(false)
-                    end
-                end)
-                setStatus("Da tat Treo dao de bat Auto Farm")
-            end
-            Settings.Farm = v
-            if v then
-                startFarm()
-            else
-                Flight.goal = nil
-            end
-        end,
-    })
-    Module._farmToggle = farmToggle
-    FarmTab:CreateToggle({
-        Name = "Gom Mob",
-        CurrentValue = Settings.BringMobs,
-        Flag = "BON_BringMobs",
-        Callback = function(v) Settings.BringMobs = v end,
-    })
-    FarmTab:CreateToggle({
-        Name = "Tu Cong Stat",
-        CurrentValue = Settings.AutoStat,
-        Flag = "BON_AutoStat",
-        Callback = function(v) Settings.AutoStat = v end,
-    })
-    FarmTab:CreateToggle({
-        Name = "Auto Aura (Buso)",
-        CurrentValue = Settings.AutoAura,
-        Flag = "BON_AutoAura",
-        Callback = function(v) Settings.AutoAura = v end,
-    })
-
-    local statList = { "Melee", "Defense", "Sword", "Gun", "Demon Fruit" }
-    FarmTab:CreateDropdown({
-        Name = "Stat tu cong",
-        Options = statList,
-        CurrentOption = { Settings.StatName },
-        MultipleOptions = false,
-        Flag = "BON_StatName",
-        Callback = function(option)
-            local v = type(option) == "table" and option[1] or option
-            if v then Settings.StatName = v end
-        end,
-    })
-    FarmTab:CreateSlider({
-        Name = "Toc do bay",
-        Range = { 100, 350 },
-        Increment = 25,
-        Suffix = "studs/s",
-        CurrentValue = Settings.FlySpeed,
-        Flag = "BON_FlySpeed",
-        Callback = function(v) Settings.FlySpeed = v end,
-    })
-    FarmTab:CreateSlider({
-        Name = "Gom toi da",
-        Range = { 2, 5 },
-        Increment = 1,
-        Suffix = "con",
-        CurrentValue = Settings.BringMax,
-        Flag = "BON_BringMax",
-        Callback = function(v) Settings.BringMax = v end,
-    })
-
-    -- ===== Tab Di Chuyen =====
-    local TravelTab = Window:CreateTab("Di Chuyen", 4483362458)
-    TravelTab:CreateSection("Sea hien tai")
-    TravelTab:CreateLabel("Dang o Sea " .. CURRENT_SEA .. " (PlaceId " .. game.PlaceId .. ")")
-    TravelTab:CreateLabel("Bat di chuyen se TU TAT Auto Farm de tranh 2 module danh nhau.")
-
-    local seaIslands = getSeaIslands()
-    local islandNames = {}
-    for _, is in ipairs(seaIslands) do
-        table.insert(islandNames, is.name)
-    end
-    if #islandNames > 0 and not findIslandByName(Settings.SelectedIsland) then
-        Settings.SelectedIsland = islandNames[1]
-    end
-    TravelTab:CreateSection("Chon dao")
-    if #islandNames == 0 then
-        TravelTab:CreateLabel("Khong co du lieu dao cho Sea nay.")
-    else
-        TravelTab:CreateDropdown({
-            Name = "Chon dao (chon la bay toi)",
-            Options = islandNames,
-            CurrentOption = { Settings.SelectedIsland },
-            MultipleOptions = false,
-            Flag = "BON_SelectedIsland",
-            Callback = function(option)
-                local v = type(option) == "table" and option[1] or option
-                if not v then return end
-                Settings.SelectedIsland = v
-                if Settings.IslandAFK then
-                    bumpTravelGen() -- huy chuyen cu, vong AFK sau lay dao moi
-                    setStatus("Doi dao treo: " .. v)
-                else
-                    requestTravelToIsland(findIslandByName(v), false)
-                end
-            end,
-        })
-        TravelTab:CreateButton({
-            Name = "Bay toi dao (1 lan)",
-            Callback = function()
-                requestTravelToIsland(findIslandByName(Settings.SelectedIsland), false)
-            end,
-        })
-    end
-
-    TravelTab:CreateSection("Toc do")
-    TravelTab:CreateSlider({
-        Name = "Toc do bay (di chuyen)",
-        Range = { 100, 350 },
-        Increment = 25,
-        Suffix = "studs/s",
-        CurrentValue = Settings.TravelSpeed,
-        Flag = "BON_TravelSpeed",
-        Callback = function(v) Settings.TravelSpeed = v end,
-    })
-    TravelTab:CreateButton({
-        Name = "Dung di chuyen (huy chuyen dang chay)",
-        Callback = function()
-            bumpTravelGen() -- huy moi chuyen di chuyen dang chay
-            Settings.TravelMove = false
-            Settings.IslandAFK = false
-            pcall(function()
-                if Module._afkToggle then
-                    Module._afkToggle:Set(false)
-                end
-            end)
-            if Module._farmTravel then
-                -- Dang farm-travel ma an dung -> tat luon farm keo farmLoop goi lai
-                Settings.Farm = false
-                pcall(function()
-                    if Module._farmToggle then
-                        Module._farmToggle:Set(false)
-                    end
-                end)
-            end
-            Flight.goal = nil
-            Module._farmTravel = false
-            setStatus("Da dung di chuyen")
-        end,
-    })
-
-    TravelTab:CreateSection("Bypass teleporter")
-    TravelTab:CreateLabel("Dich toi dao -> reset chet -> game nhan spawn o dao.")
-    local afkToggle = TravelTab:CreateToggle({
-        Name = "Treo dao (bypass)",
-        CurrentValue = Settings.IslandAFK,
-        Flag = "BON_IslandAFK",
-        Callback = function(v)
-            if v then
-                local island = findIslandByName(Settings.SelectedIsland)
-                if not island then
-                    setStatus("Chua chon dao")
-                    pcall(function() afkToggle:Set(false) end)
-                    Settings.IslandAFK = false
-                    return
-                end
-                Settings.IslandAFK = true
-                stopFarmForTravel("Treo dao: " .. island.name .. " (da tat Auto Farm)")
-                islandAfkLoop()
-            else
-                Settings.IslandAFK = false
-            end
-        end,
-    })
-    Module._afkToggle = afkToggle
-    TravelTab:CreateButton({
-        Name = "Bypass tele 1 lan",
-        Callback = function()
-            requestTravelToIsland(findIslandByName(Settings.SelectedIsland), true)
-        end,
-    })
-
-    -- ===== Tab Mua Do =====
-    local ShopTab = Window:CreateTab("Mua Do", 4483362458)
-    ShopTab:CreateSection("Auto Buy")
-    ShopTab:CreateToggle({
-        Name = "Auto Buy (uu tien Melee)",
-        CurrentValue = Settings.AutoBuy,
-        Flag = "BON_AutoBuy",
-        Callback = function(v) Settings.AutoBuy = v end,
-    })
-    local moneyLabel = ShopTab:CreateLabel("Tien: dang tai...")
-
-    local shopButtons = {}
-    local function refreshShopButtons()
-        local beli, frag = getMoney()
-        pcall(function()
-            moneyLabel:Set("Beli: " .. fmtNum(beli) .. " | Frag: " .. fmtNum(frag) .. " - cham nut duoi de mua thu cong")
-        end)
-        for _, entry in ipairs(shopButtons) do
-            local item = entry.item
-            local owned = shopBought[item.name] or (item.tools and findToolByNames(item.tools) ~= nil)
-            pcall(function()
-                entry.button:Set(owned and ("Da co: " .. item.display) or ("Mua " .. item.display .. " | " .. priceText(item)))
-            end)
-        end
-    end
-
-    for idx, item in ipairs(SHOP_ITEMS) do
-        if idx == 1 then ShopTab:CreateSection("Haki / Ability") end
-        if idx == 5 then ShopTab:CreateSection("Vo (Melee) - tu thap toi cao") end
-        local button = ShopTab:CreateButton({
-            Name = "Mua " .. item.display .. " | " .. priceText(item),
-            Callback = function()
-                tryBuyItem(item, true)
-                refreshShopButtons()
-            end,
-        })
-        table.insert(shopButtons, { item = item, button = button })
-    end
-    ShopTab:CreateButton({
-        Name = "Lam moi tien/gia",
-        Callback = function() refreshShopButtons() end,
-    })
-    refreshShopButtons()
-
-    task.spawn(function()
-        while sessionAlive() and Module._window == Window do
-            refreshShopButtons()
-            task.wait(2)
-        end
+-- ===== AUTO BOUNTY (v17): code chuyen sang scripts/bounty.lua =====
+-- Tach file rieng de moi lan push nhe (CLI gioi han 128KB/argument).
+-- bloxfruits.lua cung cap context qua _G.BON_BF roi loadstring bounty.lua.
+_G.BON_BF = {
+    Settings = Settings, Module = Module, PVP = PVP, Bounty = Bounty,
+    Player = Player, Players = Players, Data = Data, Level = Level,
+    CommF = CommF, ReplicatedStorage = ReplicatedStorage,
+    Flight = Flight, V = V, SHOP_ITEMS = SHOP_ITEMS, CURRENT_SEA = CURRENT_SEA,
+    espCache = espCache, fovCircle = fovCircle, statusText = statusText,
+    setStatus = setStatus, sessionAlive = sessionAlive, getChar = getChar,
+    getSeaIslands = getSeaIslands, findIslandByName = findIslandByName,
+    bumpTravelGen = bumpTravelGen, stopFarmForTravel = stopFarmForTravel,
+    requestTravelToIsland = requestTravelToIsland, islandAfkLoop = islandAfkLoop,
+    startFarm = startFarm, equipMelee = equipMelee, findToolByNames = findToolByNames,
+    isMeleeTool = isMeleeTool, getMoney = getMoney, priceText = priceText,
+    fmtNum = fmtNum, tryBuyItem = tryBuyItem, shopBought = shopBought,
+    pvpApplyAim = pvpApplyAim, pvpIsEnemy = pvpIsEnemy, pvpWallBetween = pvpWallBetween,
+    pvpHideESP = pvpHideESP, pvpDestroyESP = pvpDestroyESP,
+}
+do
+    local ok, err = pcall(function()
+        local url = "https://raw.githubusercontent.com/bonorbom/Script-r-b-l-c/main/scripts/bounty.lua?t=" .. tostring(math.floor(tick()))
+        local chunk = loadstring(game:HttpGet(url))
+        assert(chunk, "compile fail: bounty.lua")
+        chunk()
     end)
-
-    local PvpTab = Window:CreateTab("PVP", 4483362458)
-    PvpTab:CreateSection("Aimbot")
-    PvpTab:CreateLabel("Luu y: tat Auto Farm khi dung Aimbot (2 module danh nhau).")
-    PvpTab:CreateToggle({
-        Name = "Aimbot",
-        CurrentValue = PVP.Aimbot,
-        Flag = "PvpAimbot",
-        Callback = function(v)
-            PVP.Aimbot = v
-            setStatus(v and "PVP: Aimbot BAT" or "PVP: Aimbot TAT")
-        end,
-    })
-    PvpTab:CreateToggle({
-        Name = "POV Visual (vong vung aim)",
-        CurrentValue = PVP.AimPOV,
-        Flag = "PvpAimPOV",
-        Callback = function(v) PVP.AimPOV = v end,
-    })
-    PvpTab:CreateSlider({
-        Name = "FOV (vung aim)",
-        Range = { 10, 360 },
-        Increment = 10,
-        CurrentValue = PVP.AimFOV,
-        Flag = "PvpAimFOV",
-        Callback = function(v) PVP.AimFOV = math.floor(v) end,
-    })
-    PvpTab:CreateDropdown({
-        Name = "Che do aim",
-        Options = { "Smooth", "Lock" },
-        CurrentOption = { "Smooth" },
-        MultipleOptions = false,
-        Flag = "PvpAimMode",
-        Callback = function(v)
-            PVP.AimMode = (type(v) == "table" and v[1]) or v
-        end,
-    })
-    PvpTab:CreateSlider({
-        Name = "Toc do Smooth",
-        Range = { 1, 100 },
-        Increment = 1,
-        CurrentValue = PVP.AimSpeed,
-        Flag = "PvpAimSpeed",
-        Callback = function(v) PVP.AimSpeed = math.floor(v) end,
-    })
-    PvpTab:CreateToggle({
-        Name = "Wall Check (co tuong thi khong aim)",
-        CurrentValue = PVP.WallCheck,
-        Flag = "PvpWallCheck",
-        Callback = function(v) PVP.WallCheck = v end,
-    })
-
-    PvpTab:CreateSection("ESP")
-    PvpTab:CreateToggle({
-        Name = "ESP",
-        CurrentValue = PVP.ESP,
-        Flag = "PvpESP",
-        Callback = function(v)
-            PVP.ESP = v
-            setStatus(v and "PVP: ESP BAT" or "PVP: ESP TAT")
-        end,
-    })
-    PvpTab:CreateToggle({
-        Name = "ESP Box (hitbox)",
-        CurrentValue = PVP.ESPBox,
-        Flag = "PvpESPBox",
-        Callback = function(v) PVP.ESPBox = v end,
-    })
-    PvpTab:CreateToggle({
-        Name = "ESP Tia",
-        CurrentValue = PVP.ESPTracer,
-        Flag = "PvpESPTracer",
-        Callback = function(v) PVP.ESPTracer = v end,
-    })
-    PvpTab:CreateToggle({
-        Name = "ESP Highlight",
-        CurrentValue = PVP.ESPHighlight,
-        Flag = "PvpESPHighlight",
-        Callback = function(v) PVP.ESPHighlight = v end,
-    })
-    PvpTab:CreateToggle({
-        Name = "ESP Ten / khoang cach / mau",
-        CurrentValue = PVP.ESPInfo,
-        Flag = "PvpESPInfo",
-        Callback = function(v) PVP.ESPInfo = v end,
-    })
-
-    PvpTab:CreateSection("Friendly (hien mau xanh la)")
-    local friendlyLabel = PvpTab:CreateLabel("Danh sach: (trong)")
-    local function refreshFriendlyLabel()
-        if #PVP.Friendly == 0 then
-            friendlyLabel:Set("Danh sach: (trong)")
-        else
-            friendlyLabel:Set("Danh sach: " .. table.concat(PVP.Friendly, ", "))
-        end
+    if not ok then
+        warn("[BloxFruits] Khong nap duoc scripts/bounty.lua: " .. tostring(err))
     end
-    PvpTab:CreateInput({
-        Name = "Them Friendly",
-        PlaceholderText = "Nhap ten / DisplayName / UserId roi Enter",
-        RemoveTextAfterFocusLost = true,
-        Callback = function(text)
-            text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-            if text ~= "" then
-                table.insert(PVP.Friendly, text)
-                refreshFriendlyLabel()
-                setStatus("PVP: da them friendly " .. text)
-            end
-        end,
-    })
-    PvpTab:CreateButton({
-        Name = "Xoa het Friendly",
-        Callback = function()
-            PVP.Friendly = {}
-            refreshFriendlyLabel()
-            setStatus("PVP: da xoa het friendly")
-        end,
-    })
-
-    pcall(function()
-        lib:Notify({
-            Title = "BON Blox Fruits v16",
-            Content = "Da tai Rayfield UI. Farm: tab Farm; di chuyen: tab Di Chuyen; PVP: tab PVP.",
-            Duration = 5,
-            Image = 4483362458,
-        })
-    end)
-    return Window
 end
-
-function Module.Start()
-    if Module._gui then return end
-    Module._gui = buildGui()
-    print("[BloxFruits] Da tai GUI v16 (Rayfield). Level hien tai: " .. tostring(Level.Value))
-end
-
-function Module.Stop()
-    Settings.Farm = false
-    Settings.AutoBuy = false
-    Settings.IslandAFK = false
-    Settings.TravelMove = false
-    Flight.goal = nil
-    PVP.Aimbot = false
-    PVP.AimPOV = false
-    PVP.ESP = false
-    if fovCircle then
-        pcall(function() fovCircle.Visible = false end)
-    end
-    for _, e in pairs(espCache) do
-        pvpHideESP(e)
-        pvpDestroyESP(e)
-    end
-    Module._statusLabel = nil
-    Module._farmToggle = nil
-    Module._islandAfkRunning = false
-    if Module._rayfield then
-        pcall(function() Module._rayfield:Destroy() end)
-        Module._rayfield = nil
-    end
-    Module._window = nil
-    Module._gui = nil
-end
-
-Module.Start()
-print("[BloxFruits] San sang (v16). Bat 'Auto Farm' tren Rayfield de farm. Level: " .. tostring(Level.Value))
 
 return Module
