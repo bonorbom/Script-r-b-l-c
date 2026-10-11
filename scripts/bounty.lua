@@ -136,8 +136,13 @@ end
 -- team (pvpIsEnemy), PvpDisabled, blacklist. Refresh dinh ky + khi target chet/roi.
 local function bountyRefreshTargets()
     local list = {}
+    -- Debug: dem xem moi nguoi bi loai o buoc nao de Bon biet vi sao list trong
+    local dbg = { total = 0, skipTeam = 0, skipPvpDis = 0, skipPerm = 0, skipBan = 0, skipChar = 0, ok = 0 }
+    Bounty._scanDbg = dbg
     local myLv = bountyReadLevel(Player)
     if not myLv or myLv < BOUNTY_PVP_MIN_LV then
+        dbg.myLvFail = true
+        dbg.myLv = myLv
         Bounty.Targets = list
         return list
     end
@@ -149,16 +154,29 @@ local function bountyRefreshTargets()
     end
     local _, _, myHrp = getChar()
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= Player and pvpIsEnemy(plr) and not bountyPvpDisabled(plr)
-            and not Bounty._permBlacklist[plr] then -- bi no giet: vinh vien khong danh lai
-            local bannedUntil = bountyBlacklist[plr]
-            if not (bannedUntil and tick() < bannedUntil) then
-                local tc = plr.Character
-                local th = tc and tc:FindFirstChildOfClass("Humanoid")
-                local tr = tc and tc:FindFirstChild("HumanoidRootPart")
-                if th and tr and th.Health > 0 then
-                    local d = (myHrp and tr.Position) and (tr.Position - myHrp.Position).Magnitude or math.huge
-                    table.insert(list, { plr = plr, dist = d })
+        if plr ~= Player then
+            dbg.total = dbg.total + 1
+            if not pvpIsEnemy(plr) then
+                dbg.skipTeam = dbg.skipTeam + 1 -- cung team hoac friendly
+            elseif bountyPvpDisabled(plr) then
+                dbg.skipPvpDis = dbg.skipPvpDis + 1
+            elseif Bounty._permBlacklist[plr] then
+                dbg.skipPerm = dbg.skipPerm + 1
+            else
+                local bannedUntil = bountyBlacklist[plr]
+                if bannedUntil and tick() < bannedUntil then
+                    dbg.skipBan = dbg.skipBan + 1
+                else
+                    local tc = plr.Character
+                    local th = tc and tc:FindFirstChildOfClass("Humanoid")
+                    local tr = tc and tc:FindFirstChild("HumanoidRootPart")
+                    if not (th and tr and th.Health > 0) then
+                        dbg.skipChar = dbg.skipChar + 1
+                    else
+                        dbg.ok = dbg.ok + 1
+                        local d = (myHrp and tr.Position) and (tr.Position - myHrp.Position).Magnitude or math.huge
+                        table.insert(list, { plr = plr, dist = d })
+                    end
                 end
             end
         end
@@ -975,16 +993,35 @@ Player.CharacterAdded:Connect(function()
     if Settings.Bounty then bountyHookStunProbe() end
 end)
 
--- Text hien thi bang target tren GUI
+-- Text hien thi bang target tren GUI (kem debug khi list trong)
 local function bountyTargetLabelText()
     if #Bounty.Targets == 0 then
+        local d = Bounty._scanDbg
+        if d then
+            local myTeamName = "?"
+            pcall(function()
+                local tm = Player.Team
+                myTeamName = tm and tm.Name or "?"
+            end)
+            local s = "Danh sach target: (trong)\nQuet: tong " .. d.total
+                .. " | cung team/fr " .. d.skipTeam
+                .. " | pvp tat " .. d.skipPvpDis
+                .. " | perm " .. d.skipPerm
+                .. " | ban " .. d.skipBan
+                .. " | chet " .. d.skipChar
+                .. "\nTeam minh: " .. myTeamName
+            if d.myLvFail then
+                s = s .. " | LOI: khong doc duoc lv minh (" .. tostring(d.myLv) .. ")"
+            end
+            return s
+        end
         return "Danh sach target: (trong)"
     end
     local lines = { "Danh sach target (" .. #Bounty.Targets .. "):" }
     for i = 1, math.min(#Bounty.Targets, 8) do
         local t = Bounty.Targets[i]
         local nm = tostring(t.plr.DisplayName ~= "" and t.plr.DisplayName or t.plr.Name)
-        table.insert(lines, i .. ". " .. nm .. " (Lv" .. tostring(t.level) .. ")")
+        table.insert(lines, i .. ". " .. nm .. " (" .. math.floor(t.dist or 0) .. "m)")
     end
     return table.concat(lines, "\n")
 end
