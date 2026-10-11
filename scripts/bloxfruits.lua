@@ -121,6 +121,7 @@ local Bounty = {
     CastPhase = false,      -- true = dang cast: TAT fly, tha vat ly, tat noclip
     StunPauses = 0,         -- dem so lan pause vi nghi stun
     AutoHaki = false,       -- v17: tu bat lai Ken + Buso khi bounty chay
+    _dmgTrack = {},         -- [plr] = {t0, startHP, damaged}: anti "duoi 20" (60s khong mat mau -> blacklist)
     _lastHP = nil,          -- theo doi damage (Held Skill Interruption)
     _tookDamageAt = 0,
     _probeChar = nil,       -- character da hook stun-probe
