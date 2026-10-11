@@ -22,6 +22,7 @@ local PVP = {
     AimFOV = 120,       -- 10-360
     AimMode = "Smooth", -- Smooth | Lock
     AimSpeed = 25,      -- 1-100, chi dung cho Smooth
+    AimPart = "head",   -- head | chest | armL | armR | legL | legR | lol
     WallCheck = true,
     ESP = false,
     ESPBox = true,
@@ -101,13 +102,82 @@ local function pvpIsEnemy(plr)
     return not pvpSameTeam(plr)
 end
 
-local function pvpWallBetween(targetPos, targetChar)
+-- Ban do label dropdown -> key bo phan
+local AIM_PART_KEYS = {
+    ["Đầu"] = "head",
+    ["Ngực"] = "chest",
+    ["Tay trái"] = "armL",
+    ["Tay phải"] = "armR",
+    ["Chân trái"] = "legL",
+    ["Chân phải"] = "legR",
+    ["lol"] = "lol",
+}
+
+-- Ten part theo R15 truoc, R6 sau
+local AIM_PART_NAMES = {
+    head  = { "Head" },
+    chest = { "UpperTorso", "Torso" },
+    armL  = { "LeftUpperArm", "LeftLowerArm", "LeftHand", "Left Arm" },
+    armR  = { "RightUpperArm", "RightLowerArm", "RightHand", "Right Arm" },
+    legL  = { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "Left Leg" },
+    legR  = { "RightUpperLeg", "RightLowerLeg", "RightFoot", "Right Leg" },
+}
+
+local function findCharPart(char, names)
+    for _, n in ipairs(names) do
+        local p = char:FindFirstChild(n)
+        if p and p:IsA("BasePart") then
+            return p
+        end
+    end
+    return nil
+end
+
+-- Vi tri aim theo bo phan da chon (ho tro R6 + R15)
+local function getAimPos(char, key)
+    if key == "lol" then
+        -- meme: aim vao giua, cho troll :))
+        local base = findCharPart(char, { "LowerTorso", "Torso" })
+            or char:FindFirstChild("HumanoidRootPart")
+        if base then
+            return base.Position + Vector3.new(0, -0.8, 0)
+        end
+        return nil
+    end
+    local part = findCharPart(char, AIM_PART_NAMES[key] or AIM_PART_NAMES.head)
+    if part then
+        return part.Position
+    end
+    local head = char:FindFirstChild("Head")
+    return head and head.Position or nil
+end
+
+-- Lay model phuong tien neu player dang ngoi (gan nhu game nao lai xe cung bat ngoi)
+local function getVehicle(char, hum)
+    local seat = nil
+    pcall(function() seat = hum and hum.SeatPart or nil end)
+    if seat then
+        local veh = seat:FindFirstAncestorOfClass("Model")
+        if veh and veh ~= char then
+            return veh
+        end
+    end
+    return nil
+end
+
+local function pvpWallBetween(targetPos, targetChar, targetHum)
     local char = Player.Character
     local head = char and char:FindFirstChild("Head")
     if not head then return false end
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { pvpCamera, char }
+    local ignore = { pvpCamera, char }
+    -- Dich dang ngoi tren xe: bo qua luon phuong tien (khong tinh la tuong)
+    local veh = getVehicle(targetChar, targetHum)
+    if veh then
+        table.insert(ignore, veh)
+    end
+    params.FilterDescendantsInstances = ignore
     params.IgnoreWater = true
     local res = workspace:Raycast(head.Position, targetPos - head.Position, params)
     if not res then return false end
@@ -123,14 +193,16 @@ local function pvpGetTarget()
         if pvpIsEnemy(plr) then
             local char = plr.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local head = char and char:FindFirstChild("Head")
-            if hum and head and hum.Health > 0 then
-                local sp, onScreen = pvpCamera:WorldToViewportPoint(head.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= PVP.AimFOV and d < bestD then
-                        if (not PVP.WallCheck) or (not pvpWallBetween(head.Position, char)) then
-                            best, bestD = { head = head }, d
+            if hum and hum.Health > 0 then
+                local aimPos = getAimPos(char, PVP.AimPart)
+                if aimPos then
+                    local sp, onScreen = pvpCamera:WorldToViewportPoint(aimPos)
+                    if onScreen then
+                        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                        if d <= PVP.AimFOV and d < bestD then
+                            if (not PVP.WallCheck) or (not pvpWallBetween(aimPos, char, hum)) then
+                                best, bestD = { pos = aimPos }, d
+                            end
                         end
                     end
                 end
@@ -141,9 +213,9 @@ local function pvpGetTarget()
 end
 
 local function pvpApplyAim(target)
-    if not target or not target.head then return end
+    if not target or not target.pos then return end
     local camPos = pvpCamera.CFrame.Position
-    local goal = CFrame.new(camPos, target.head.Position)
+    local goal = CFrame.new(camPos, target.pos)
     if PVP.AimMode == "Lock" then
         pvpCamera.CFrame = goal
     else
@@ -177,6 +249,12 @@ local function pvpGetESP(plr)
     e.hl.OutlineTransparency = 0
     e.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     e.hl.Enabled = false
+    -- Highlight rieng cho phuong tien khi dich dang ngoi (lai xe)
+    e.vhl = Instance.new("Highlight")
+    e.vhl.FillTransparency = 0.7
+    e.vhl.OutlineTransparency = 0
+    e.vhl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    e.vhl.Enabled = false
     espCache[plr] = e
     return e
 end
@@ -186,6 +264,7 @@ local function pvpHideESP(e)
     if e.tracer then e.tracer.Visible = false end
     if e.text then e.text.Visible = false end
     if e.hl then e.hl.Enabled = false end
+    if e.vhl then e.vhl.Enabled = false end
 end
 
 local function pvpDestroyESP(e)
@@ -193,6 +272,7 @@ local function pvpDestroyESP(e)
     if e.tracer then pcall(function() e.tracer:Remove() end) end
     if e.text then pcall(function() e.text:Remove() end) end
     if e.hl then pcall(function() e.hl:Destroy() end) end
+    if e.vhl then pcall(function() e.vhl:Destroy() end) end
 end
 
 local function pvpUpdateESP()
@@ -216,6 +296,19 @@ local function pvpUpdateESP()
                 e.hl.Enabled = true
             else
                 e.hl.Enabled = false
+            end
+            -- Highlight phuong tien khi dich dang ngoi (lai xe)
+            local veh = alive and getVehicle(char, hum) or nil
+            if PVP.ESPHighlight and veh then
+                e.vhl.Adornee = veh
+                e.vhl.FillColor = color
+                e.vhl.OutlineColor = color
+                if not e.vhl.Parent then
+                    e.vhl.Parent = getGuiParent()
+                end
+                e.vhl.Enabled = true
+            else
+                e.vhl.Enabled = false
             end
             if HasDrawing and alive then
                 local tv, tOn = pvpCamera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.8, 0))
@@ -396,6 +489,18 @@ local function buildGui()
         CurrentValue = PVP.WallCheck,
         Flag = "PvpWallCheck",
         Callback = function(v) PVP.WallCheck = v end,
+    })
+    MainTab:CreateDropdown({
+        Name = "Bo phan aim",
+        Options = { "Đầu", "Ngực", "Tay trái", "Tay phải", "Chân trái", "Chân phải", "lol" },
+        CurrentOption = { "Đầu" },
+        MultipleOptions = false,
+        Flag = "PvpAimPart",
+        Callback = function(v)
+            local label = (type(v) == "table" and v[1]) or v
+            PVP.AimPart = AIM_PART_KEYS[label] or "head"
+            setStatus("Aim vao: " .. tostring(label))
+        end,
     })
 
     MainTab:CreateSection("ESP")
