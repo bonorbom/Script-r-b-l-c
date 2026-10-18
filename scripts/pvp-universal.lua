@@ -24,7 +24,7 @@ local PVP = {
     AimSpeed = 25,      -- 1-100, chi dung cho Smooth
     AimPart = "head",   -- head | chest | armL | armR | legL | legR | lol
     AimPriority = "nearest", -- nearest | farthest | lowhp | highhp | lock
-    AimTarget = "enemy", -- enemy | team | friendly: aim dich | cung team | friendly
+    AimTarget = "enemy", -- enemy | team | friendly | npc | all
     MaxDistFoot = 10000,     -- 100-10000: dich di bo
     MaxDistVehicle = 1000,   -- 100-1000: dich dang ngoi xe
     WallCheck = true,
@@ -33,8 +33,13 @@ local PVP = {
     ESPTracer = true,
     ESPHighlight = true,
     ESPInfo = true,
+    ESPNPC = false,          -- ESP rieng cho NPC (mau tim)
+    HitboxPlayer = 0,        -- 0 = tat, 1-100: tang hitbox nguoi choi dich
+    HitboxNPC = 0,           -- 0 = tat, 1-200: tang hitbox NPC
     Friendly = {},
 }
+
+local NPC_COLOR = Color3.fromRGB(255, 0, 255) -- tim: mau ESP/aim NPC
 
 local running = true
 local function sessionAlive()
@@ -112,8 +117,43 @@ local function pvpIsTeammate(plr)
     return pvpSameTeam(plr)
 end
 
+-- ===== NPC =====
+-- NPC = Model trong workspace co Humanoid + HumanoidRootPart, khong phai character cua player.
+-- Danh sach refresh dinh ky (NPC spawn/chet lien tuc); vi tri doc live moi frame nen NPC di chuyen van aim chuan.
+local npcList = {}
+
+local function pvpIsPlayerChar(m)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character == m then return true end
+    end
+    return false
+end
+
+local function refreshNPCs()
+    local found = {}
+    local ok, desc = pcall(function() return workspace:GetDescendants() end)
+    if ok and desc then
+        for _, d in ipairs(desc) do
+            if d:IsA("Model") then
+                local hum = d:FindFirstChildOfClass("Humanoid")
+                local hrp = d:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 and not pvpIsPlayerChar(d) then
+                    table.insert(found, d)
+                end
+            end
+        end
+    end
+    npcList = found
+end
+
+local function pvpNpcAimOk()
+    local mode = PVP.AimTarget
+    return mode == "npc" or mode == "all"
+end
+
 -- Muc tieu aim theo che do da chon (dong bo cach phan loai voi bloxfruits.lua):
 -- enemy: dich (mac dinh) | team: cung team | friendly: danh sach friendly
+-- npc: chi NPC | all: dich + NPC (thay ai la aim, tru cung team/friendly)
 local function pvpAimTargetOk(plr)
     if plr == Player then return false end
     local mode = PVP.AimTarget
@@ -121,6 +161,10 @@ local function pvpAimTargetOk(plr)
         return pvpIsTeammate(plr)
     elseif mode == "friendly" then
         return pvpIsFriendly(plr)
+    elseif mode == "npc" then
+        return false
+    elseif mode == "all" then
+        return pvpIsEnemy(plr)
     end
     return pvpIsEnemy(plr)
 end
@@ -224,9 +268,12 @@ local AIM_TARGET_KEYS = {
     ["Địch"] = "enemy",
     ["Cùng team"] = "team",
     ["Friendly"] = "friendly",
+    ["NPC"] = "npc",
+    ["Tất cả"] = "all",
 }
 
 local lockedPlr = nil
+local lockedNpc = nil -- model NPC dang khoa (che do lock)
 
 -- Khoang cach 3D tu camera toi dich + gioi han theo trang thai (di bo / di xe).
 -- Tra ve dist; tra ve nil neu vuot qua khoang cach cho phep -> khong aim.
@@ -257,8 +304,15 @@ local function pvpCandidateOk(char, hum)
 end
 
 -- Chon ung vien theo che do uu tien (khong tinh che do lock).
+-- Tra ve { pos, plr, npc }: plr = Player, npc = Model NPC (1 trong 2).
 local function pvpPickCandidate(mode)
-    local best, bestScore, bestPos = nil, nil, nil
+    local best, bestScore, bestPos, bestNpc = nil, nil, nil, nil
+    local function consider(score, plr, npc, aimPos)
+        if bestScore == nil or score < bestScore then
+            best, bestScore, bestPos = plr, score, aimPos
+            bestNpc = npc
+        end
+    end
     for _, plr in ipairs(Players:GetPlayers()) do
         if pvpAimTargetOk(plr) then
             local char = plr.Character
@@ -276,14 +330,36 @@ local function pvpPickCandidate(mode)
                     else
                         score = dist -- nearest
                     end
-                    if bestScore == nil or score < bestScore then
-                        best, bestScore, bestPos = plr, score, aimPos
+                    consider(score, plr, nil, aimPos)
+                end
+            end
+        end
+    end
+    -- NPC: doc vi tri live moi lan pick nen NPC di chuyen van aim chuan
+    if pvpNpcAimOk() then
+        for _, npc in ipairs(npcList) do
+            if npc and npc.Parent then
+                local hum = npc:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local aimPos, dist = pvpCandidateOk(npc, hum)
+                    if aimPos then
+                        local score
+                        if mode == "farthest" then
+                            score = -dist
+                        elseif mode == "lowhp" then
+                            score = hum.Health
+                        elseif mode == "highhp" then
+                            score = -hum.Health
+                        else
+                            score = dist -- nearest
+                        end
+                        consider(score, nil, npc, aimPos)
                     end
                 end
             end
         end
     end
-    if best then return { pos = bestPos, plr = best } end
+    if best or bestNpc then return { pos = bestPos, plr = best, npc = bestNpc } end
     return nil
 end
 
@@ -298,17 +374,36 @@ local function pvpLockValid(plr)
     return true
 end
 
+-- Lock NPC: mat lock khi NPC bi xoa / chet / doi che do aim / vuot khoang cach.
+-- Vi tri doc live moi frame nen NPC di chuyen van giu lock chuan.
+local function pvpLockValidNpc(npc)
+    if not npc or not npc.Parent then return false end
+    if not pvpNpcAimOk() then return false end
+    local hum = npc:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if pvpTargetDist(npc, hum) == nil then return false end
+    return true
+end
+
 local function pvpGetTarget()
     -- Che do khoa: giu nguyen muc tieu cho toi khi chet / mat / vuot khoang cach.
     if PVP.AimPriority == "lock" then
-        if not pvpLockValid(lockedPlr) then
-            lockedPlr = nil
+        if not pvpLockValid(lockedPlr) then lockedPlr = nil end
+        if not pvpLockValidNpc(lockedNpc) then lockedNpc = nil end
+        if not lockedPlr and not lockedNpc then
             local pick = pvpPickCandidate("nearest")
-            if pick then lockedPlr = pick.plr end
+            if pick then
+                lockedPlr, lockedNpc = pick.plr, pick.npc
+            end
         end
+        local char = nil
         if lockedPlr then
-            local char = lockedPlr.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            char = lockedPlr.Character
+        elseif lockedNpc then
+            char = lockedNpc
+        end
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
             local aimPos = getAimPos(char, PVP.AimPart)
             if aimPos then
                 local _, onScreen = pvpCamera:WorldToViewportPoint(aimPos)
@@ -478,9 +573,200 @@ local function pvpUpdateESP()
     end
 end
 
-local pvpConn = RunService.RenderStepped:Connect(function()
+-- ===== Hitbox (tang hitbox dich + NPC, slider rieng) =====
+-- Luu kich thuoc goc de tra lai khi tat; chay dinh ky 0.5s.
+local hitboxSaved = {} -- [BasePart] = { Size, Transparency, CanCollide }
+
+local function pvpHitboxSet(hrp, size)
+    if not hrp then return end
+    if not hrp.Parent then
+        hitboxSaved[hrp] = nil -- part da bi xoa: bo record luu
+        return
+    end
+    if size and size > 0 then
+        if not hitboxSaved[hrp] then
+            local ok, sz, tr, cc = pcall(function()
+                return hrp.Size, hrp.Transparency, hrp.CanCollide
+            end)
+            if ok then
+                hitboxSaved[hrp] = { Size = sz, Transparency = tr, CanCollide = cc }
+            else
+                return
+            end
+        end
+        pcall(function()
+            hrp.Size = Vector3.new(size, size, size)
+            hrp.Transparency = 0.6
+            hrp.CanCollide = false
+        end)
+    elseif hitboxSaved[hrp] then
+        local o = hitboxSaved[hrp]
+        hitboxSaved[hrp] = nil
+        pcall(function()
+            hrp.Size = o.Size
+            hrp.Transparency = o.Transparency
+            hrp.CanCollide = o.CanCollide
+        end)
+    end
+end
+
+local function pvpRestoreAllHitbox()
+    for hrp, _ in pairs(hitboxSaved) do
+        pvpHitboxSet(hrp, 0)
+    end
+end
+
+local function pvpUpdateHitbox()
+    local want = {}
+    if PVP.HitboxPlayer > 0 then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if pvpIsEnemy(plr) then
+                local char = plr.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then want[hrp] = PVP.HitboxPlayer end
+            end
+        end
+    end
+    if PVP.HitboxNPC > 0 then
+        for _, npc in ipairs(npcList) do
+            if npc and npc.Parent then
+                local hrp = npc:FindFirstChild("HumanoidRootPart")
+                if hrp then want[hrp] = PVP.HitboxNPC end
+            end
+        end
+    end
+    for hrp, s in pairs(want) do
+        pvpHitboxSet(hrp, s)
+    end
+    for hrp, _ in pairs(hitboxSaved) do
+        if not want[hrp] then
+            pvpHitboxSet(hrp, 0)
+        end
+    end
+end
+
+-- ===== ESP NPC (mau tim) =====
+local npcEspCache = {}
+
+local function pvpGetNpcESP(npc)
+    local e = npcEspCache[npc]
+    if e then return e end
+    e = {}
+    if HasDrawing then
+        e.box = Drawing.new("Square")
+        e.box.Visible = false
+        e.box.Thickness = 1.5
+        e.box.Filled = false
+        e.tracer = Drawing.new("Line")
+        e.tracer.Visible = false
+        e.tracer.Thickness = 1
+        e.text = Drawing.new("Text")
+        e.text.Visible = false
+        e.text.Size = 13
+        e.text.Center = true
+        e.text.Outline = true
+    end
+    e.hl = Instance.new("Highlight")
+    e.hl.FillTransparency = 0.65
+    e.hl.OutlineTransparency = 0
+    e.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    e.hl.Enabled = false
+    npcEspCache[npc] = e
+    return e
+end
+
+local function pvpUpdateNpcESP()
+    local vs = pvpCamera.ViewportSize
+    local seen = {}
+    for _, npc in ipairs(npcList) do
+        if npc and npc.Parent then
+            local hum = npc:FindFirstChildOfClass("Humanoid")
+            local hrp = npc:FindFirstChild("HumanoidRootPart")
+            local head = npc:FindFirstChild("Head")
+            local alive = hum and hrp and hum.Health > 0
+            if alive then
+                seen[npc] = true
+                local e = pvpGetNpcESP(npc)
+                if PVP.ESPHighlight then
+                    e.hl.Adornee = npc
+                    e.hl.FillColor = NPC_COLOR
+                    e.hl.OutlineColor = NPC_COLOR
+                    if not e.hl.Parent then
+                        e.hl.Parent = getGuiParent()
+                    end
+                    e.hl.Enabled = true
+                else
+                    e.hl.Enabled = false
+                end
+                if HasDrawing then
+                    local topPos = head and (head.Position + Vector3.new(0, 0.8, 0))
+                        or (hrp.Position + Vector3.new(0, 2.5, 0))
+                    local tv, tOn = pvpCamera:WorldToViewportPoint(topPos)
+                    local bv, bOn = pvpCamera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+                    local rv, rOn = pvpCamera:WorldToViewportPoint(hrp.Position)
+                    local onScreen = tOn and bOn and rOn
+                    if e.box then
+                        if PVP.ESPBox and onScreen then
+                            local h = math.max(math.abs(tv.Y - bv.Y), 4)
+                            local w = h * 0.55
+                            e.box.Visible = true
+                            e.box.Size = Vector2.new(w, h)
+                            e.box.Position = Vector2.new(tv.X - w / 2, tv.Y)
+                            e.box.Color = NPC_COLOR
+                        else
+                            e.box.Visible = false
+                        end
+                    end
+                    if e.tracer then
+                        if PVP.ESPTracer and onScreen then
+                            e.tracer.Visible = true
+                            e.tracer.From = Vector2.new(vs.X / 2, vs.Y)
+                            e.tracer.To = Vector2.new(rv.X, rv.Y)
+                            e.tracer.Color = NPC_COLOR
+                        else
+                            e.tracer.Visible = false
+                        end
+                    end
+                    if e.text then
+                        if PVP.ESPInfo and onScreen then
+                            local dist = math.floor((hrp.Position - pvpCamera.CFrame.Position).Magnitude)
+                            local hp = math.floor(hum.Health)
+                            e.text.Visible = true
+                            e.text.Text = tostring(npc.Name) .. " | " .. dist .. "m | " .. hp .. " HP"
+                            e.text.Position = Vector2.new(tv.X, tv.Y - 16)
+                            e.text.Color = NPC_COLOR
+                        else
+                            e.text.Visible = false
+                        end
+                    end
+                end
+            end
+        end
+    end
+    for npc, e in pairs(npcEspCache) do
+        if not seen[npc] then
+            pvpDestroyESP(e)
+            npcEspCache[npc] = nil
+        end
+    end
+end
+
+local npcRefreshT, hitboxT = 0, 0
+local pvpConn = RunService.RenderStepped:Connect(function(dt)
     if not sessionAlive() then return end
     pvpCamera = workspace.CurrentCamera or pvpCamera
+    -- Refresh danh sach NPC dinh ky (NPC spawn/chet lien tuc)
+    npcRefreshT = npcRefreshT + (dt or 0.016)
+    if npcRefreshT >= 2 then
+        npcRefreshT = 0
+        pcall(refreshNPCs)
+    end
+    -- Cap nhat hitbox dinh ky
+    hitboxT = hitboxT + (dt or 0.016)
+    if hitboxT >= 0.5 then
+        hitboxT = 0
+        pcall(pvpUpdateHitbox)
+    end
     if fovCircle then
         local show = PVP.AimPOV
         fovCircle.Visible = show
@@ -500,6 +786,13 @@ local pvpConn = RunService.RenderStepped:Connect(function()
         pcall(pvpUpdateESP)
     else
         for _, e in pairs(espCache) do
+            pvpHideESP(e)
+        end
+    end
+    if PVP.ESPNPC then
+        pcall(pvpUpdateNpcESP)
+    else
+        for _, e in pairs(npcEspCache) do
             pvpHideESP(e)
         end
     end
@@ -624,13 +917,13 @@ local function buildGui()
         Callback = function(v)
             local label = (type(v) == "table" and v[1]) or v
             PVP.AimPriority = AIM_PRIORITY_KEYS[label] or "nearest"
-            if PVP.AimPriority ~= "lock" then lockedPlr = nil end
+            if PVP.AimPriority ~= "lock" then lockedPlr = nil lockedNpc = nil end
             setStatus("Ưu tiên aim: " .. tostring(label))
         end,
     })
     MainTab:CreateDropdown({
         Name = "Mục tiêu aim",
-        Options = { "Địch", "Cùng team", "Friendly" },
+        Options = { "Địch", "Cùng team", "Friendly", "NPC", "Tất cả" },
         CurrentOption = { "Địch" },
         MultipleOptions = false,
         Flag = "PvpAimTarget",
@@ -638,6 +931,7 @@ local function buildGui()
             local label = (type(v) == "table" and v[1]) or v
             PVP.AimTarget = AIM_TARGET_KEYS[label] or "enemy"
             lockedPlr = nil
+            lockedNpc = nil
             setStatus("Mục tiêu aim: " .. tostring(label))
         end,
     })
@@ -699,6 +993,42 @@ local function buildGui()
         Callback = function(v) PVP.ESPInfo = v end,
     })
 
+    MainTab:CreateSection("NPC (mau tim)")
+    MainTab:CreateToggle({
+        Name = "ESP NPC",
+        CurrentValue = PVP.ESPNPC,
+        Flag = "PvpESPNPC",
+        Callback = function(v)
+            PVP.ESPNPC = v
+            setStatus(v and "ESP NPC BAT" or "ESP NPC TAT")
+        end,
+    })
+    MainTab:CreateLabel("Muc tieu aim: chon NPC / Tat ca o dropdown tren.")
+
+    MainTab:CreateSection("Hitbox (0 = tat)")
+    MainTab:CreateSlider({
+        Name = "Hitbox nguoi choi dich",
+        Range = { 0, 100 },
+        Increment = 1,
+        CurrentValue = PVP.HitboxPlayer,
+        Flag = "PvpHitboxPlayer",
+        Callback = function(v)
+            PVP.HitboxPlayer = math.floor(v)
+            setStatus("Hitbox nguoi choi: " .. PVP.HitboxPlayer)
+        end,
+    })
+    MainTab:CreateSlider({
+        Name = "Hitbox NPC",
+        Range = { 0, 200 },
+        Increment = 1,
+        CurrentValue = PVP.HitboxNPC,
+        Flag = "PvpHitboxNPC",
+        Callback = function(v)
+            PVP.HitboxNPC = math.floor(v)
+            setStatus("Hitbox NPC: " .. PVP.HitboxNPC)
+        end,
+    })
+
     MainTab:CreateSection("Friendly (hien mau xanh la)")
     local friendlyLabel = MainTab:CreateLabel("Danh sach: (trong)")
     local function refreshFriendlyLabel()
@@ -737,9 +1067,14 @@ M._window = buildGui()
 function M.Stop()
     running = false
     lockedPlr = nil
+    lockedNpc = nil
     PVP.Aimbot = false
     PVP.AimPOV = false
     PVP.ESP = false
+    PVP.ESPNPC = false
+    PVP.HitboxPlayer = 0
+    PVP.HitboxNPC = 0
+    pcall(pvpRestoreAllHitbox)
     if pvpConn then
         pcall(function() pvpConn:Disconnect() end)
     end
@@ -751,6 +1086,11 @@ function M.Stop()
         pvpDestroyESP(e)
     end
     espCache = {}
+    for _, e in pairs(npcEspCache) do
+        pvpDestroyESP(e)
+    end
+    npcEspCache = {}
+    npcList = {}
     statusLabel = nil
     M._window = nil
 end
