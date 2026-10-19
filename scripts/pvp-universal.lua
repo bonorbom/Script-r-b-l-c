@@ -37,6 +37,14 @@ local PVP = {
     HitboxPlayer = 0,        -- 0 = tat, 1-100: tang hitbox nguoi choi dich
     HitboxNPC = 0,           -- 0 = tat, 1-200: tang hitbox NPC
     Friendly = {},
+    -- Canh bao sau lung (mui ten) + POV crosshair
+    POVCross = true,         -- hien tam ngam giua man hinh
+    BehindWarn = false,      -- bat canh bao co dich sau lung
+    BehindDist = 80,         -- khoang cach quet sau lung (m)
+    BehindXray = true,       -- true = bao ca khi co tuong che (xuyen tuong)
+    BehindCombatOnly = false,-- true = chi bao khi dang combat
+    BehindMax = 3,           -- toi da N mui ten
+    LegitAim = false,        -- aim trong nhu nguoi (delay + ease-out + jitter + overshoot)
 }
 
 local NPC_COLOR = Color3.fromRGB(255, 0, 255) -- tim: mau ESP/aim NPC
@@ -419,14 +427,63 @@ local function pvpGetTarget()
     return nil
 end
 
+-- ---------- Legit Aim: delay phan ung + ease-out + jitter + overshoot + random diem ngam ----------
+local legitReactUntil = 0
+local legitOverUntil = 0
+local legitOverDir = Vector3.new(0, 0, 0)
+local legitAimOff = Vector3.new(0, 0, 0)
+local legitJit = Vector3.new(0, 0, 0)
+local legitJitT = 0
+local lastAimPos = nil
+
+local function pvpLegitTrack(pos)
+    local now = os.clock()
+    if not lastAimPos or (pos - lastAimPos).Magnitude > 20 then
+        -- doi muc tieu: delay phan ung + flick vuot qua + random diem ngam
+        legitReactUntil = now + 0.12 + math.random() * 0.16
+        legitOverUntil = now + 0.15
+        local camPos = pvpCamera.CFrame.Position
+        local d = pos - camPos
+        legitOverDir = d.Magnitude > 0.01 and d.Unit or Vector3.new(0, 0, 0)
+        legitAimOff = Vector3.new((math.random() - 0.5) * 0.5, (math.random() - 0.5) * 0.4, 0)
+    end
+    lastAimPos = pos
+end
+
 local function pvpApplyAim(target)
     if not target or not target.pos then return end
     local camPos = pvpCamera.CFrame.Position
-    local goal = CFrame.new(camPos, target.pos)
+    local now = os.clock()
+    local aimPos = target.pos
+    if PVP.LegitAim then
+        -- rung tay nhe (random moi 0.08s)
+        if now - legitJitT > 0.08 then
+            legitJitT = now
+            legitJit = Vector3.new((math.random() - 0.5) * 0.35, (math.random() - 0.5) * 0.35, (math.random() - 0.5) * 0.2)
+        end
+        aimPos = aimPos + legitJit + legitAimOff
+        -- overshoot: lia vuot qua muc tieu roi keo ve
+        if now < legitOverUntil then
+            local k = (legitOverUntil - now) / 0.15
+            aimPos = aimPos + legitOverDir * (1.4 * k)
+        end
+    end
+    local goal = CFrame.new(camPos, aimPos)
     if PVP.AimMode == "Lock" then
         pvpCamera.CFrame = goal
     else
         local t = math.clamp(PVP.AimSpeed / 100, 0.02, 1)
+        if PVP.LegitAim then
+            if now < legitReactUntil then return end -- dung yen: dang "nhan ra" dich
+            local curLook = pvpCamera.CFrame.LookVector
+            local gd = aimPos - camPos
+            local goalLook = gd.Magnitude > 0.01 and gd.Unit or curLook
+            local ang = math.deg(math.acos(math.clamp(curLook:Dot(goalLook), -1, 1)))
+            -- nhanh khi xa, cham dan khi gan tam (nhu tay nguoi flick roi chinh)
+            local spdScale = 0.35 + 0.65 * math.min(1, ang / 45)
+            t = t * spdScale * (0.85 + math.random() * 0.3)
+            t = math.clamp(t, 0.01, 1)
+        end
         pvpCamera.CFrame = pvpCamera.CFrame:Lerp(goal, t)
     end
 end
@@ -751,6 +808,338 @@ local function pvpUpdateNpcESP()
     end
 end
 
+-- ============================================================
+-- Canh bao sau lung (mui ten bay) + POV crosshair + damage flash + Legit Aim
+-- ============================================================
+local THREAT_COL = {
+    [3] = Color3.fromRGB(255, 45, 45),   -- do: nguy hiem (cam tool + gan/nhin ve minh/lao toi)
+    [2] = Color3.fromRGB(255, 210, 50),  -- vang: cam tool
+    [1] = Color3.fromRGB(170, 170, 170), -- xam: khong cam tool
+}
+
+local pvpAimingNow = false
+
+-- ---------- Tam ngam POV: trang = nghi, xanh la = dang aim, do = dinh dame ----------
+local povT, povB, povL, povR = nil, nil, nil, nil
+if HasDrawing then
+    povT = Drawing.new("Line"); povT.Thickness = 2; povT.Visible = false
+    povB = Drawing.new("Line"); povB.Thickness = 2; povB.Visible = false
+    povL = Drawing.new("Line"); povL.Thickness = 2; povL.Visible = false
+    povR = Drawing.new("Line"); povR.Thickness = 2; povR.Visible = false
+end
+local povCur = Color3.fromRGB(255, 255, 255)
+
+-- ---------- Tia damage: do dam nhat theo huong ke ban, lan ra 2 ben, 2 ben mo truoc ----------
+local DMG_N = 9
+local dmgRays = {}
+local dmgOffsets = {}
+if HasDrawing then
+    for i = 1, DMG_N do
+        local l = Drawing.new("Line")
+        l.Visible = false
+        l.Thickness = 3
+        l.Color = Color3.fromRGB(255, 30, 30)
+        dmgRays[i] = l
+        dmgOffsets[i] = -60 + (i - 1) * (120 / (DMG_N - 1))
+    end
+end
+local dmgT0 = -1e9
+local dmgDur = 0.65
+local dmgAng = nil -- goc man hinh cua ke ban (rad, 0 = tren); nil = khong ro -> full vong
+
+local lastHP, lastChar = nil, nil
+local lastHurtT = -1e9
+local lastAttacker = nil
+
+local function pvpMyHRP()
+    local c = Player.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+
+local function pvpFindAttacker()
+    -- nhieu game gan tag "creator" (ObjectValue -> Player) len nhan vat bi danh
+    local c = Player.Character
+    if not c then return nil end
+    local function scan(o)
+        if not o then return nil end
+        local tag = o:FindFirstChild("creator")
+        if tag and tag:IsA("ObjectValue") then
+            local v = tag.Value
+            if v ~= nil and v ~= Player then
+                if typeof(v) == "Instance" then
+                    if v:IsA("Player") then return v end
+                    local p = Players:GetPlayerFromCharacter(v)
+                    if p then return p end
+                end
+            end
+        end
+        return nil
+    end
+    return scan(c) or scan(c:FindFirstChildOfClass("Humanoid"))
+end
+
+local function pvpShooterScreenAngle(attPlr)
+    if not attPlr then return nil end
+    local c = attPlr.Character
+    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local o = pvpCamera.CFrame:PointToObjectSpace(hrp.Position)
+    if o.Magnitude < 1 then return nil end
+    return math.atan2(o.X, -o.Z) -- 0 = tren man hinh
+end
+
+local function pvpStartDmgFlash()
+    dmgT0 = os.clock()
+    lastAttacker = pvpFindAttacker()
+    dmgAng = pvpShooterScreenAngle(lastAttacker)
+end
+
+local function pvpDamageCheck()
+    local c = Player.Character
+    if c ~= lastChar then
+        lastChar = c
+        lastHP = nil
+    end
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    local hp = hum.Health
+    if lastHP ~= nil and hp < lastHP - 0.5 then
+        lastHurtT = os.clock()
+        pvpStartDmgFlash()
+    end
+    lastHP = hp
+end
+
+local function pvpUpdatePOV(dt, now, aiming)
+    if not HasDrawing then return end
+    local vs = pvpCamera.ViewportSize
+    local cx, cy = vs.X / 2, vs.Y / 2
+    local show = PVP.POVCross
+    local dmgAge = now - dmgT0
+    local flashing = dmgAge < dmgDur
+    local crossCol
+    if flashing then
+        crossCol = Color3.fromRGB(255, 30, 30) -- dinh dame: do ngay, khong chuyen mau
+        povCur = crossCol
+    else
+        local want = aiming and Color3.fromRGB(60, 255, 90) or Color3.fromRGB(255, 255, 255)
+        povCur = povCur:Lerp(want, math.min(1, dt * 9)) -- chuyen mau nhanh nhung van nhin thay
+        crossCol = povCur
+    end
+    local gap, len = 5, 9
+    local segs = {
+        { povT, cx, cy - gap - len, cx, cy - gap },
+        { povB, cx, cy + gap, cx, cy + gap + len },
+        { povL, cx - gap - len, cy, cx - gap, cy },
+        { povR, cx + gap, cy, cx + gap + len, cy },
+    }
+    for _, s in ipairs(segs) do
+        local l = s[1]
+        if l then
+            l.Visible = show
+            if show then
+                l.From = Vector2.new(s[2], s[3])
+                l.To = Vector2.new(s[4], s[5])
+                l.Color = crossCol
+            end
+        end
+    end
+    if flashing then
+        local k = dmgAge / dmgDur
+        for i, l in ipairs(dmgRays) do
+            local ang
+            if dmgAng then
+                ang = dmgAng + math.rad(dmgOffsets[i])
+            else
+                ang = (i - 1) / DMG_N * math.pi * 2
+            end
+            local r1, r2 = 30, 58
+            l.From = Vector2.new(cx + r1 * math.sin(ang), cy - r1 * math.cos(ang))
+            l.To = Vector2.new(cx + r2 * math.sin(ang), cy - r2 * math.cos(ang))
+            local centerW = dmgAng and (1 - math.abs(dmgOffsets[i]) / 65) or 1
+            local delay = dmgAng and (math.abs(dmgOffsets[i]) / 60) * 0.35 or 0
+            local a = centerW * (1 - math.clamp((k - delay) / 0.45, 0, 1))
+            l.Transparency = 1 - math.clamp(a, 0, 1)
+            l.Visible = show and a > 0.02
+        end
+    else
+        for _, l in ipairs(dmgRays) do
+            l.Visible = false
+        end
+    end
+end
+
+-- ---------- Mui ten canh bao sau lung ----------
+local behindArrows = {}
+local behindScanT = 0
+local behindCd = {}
+
+local function pvpGetBehindArrow(plr)
+    for _, a in ipairs(behindArrows) do
+        if a.plr == plr then return a end
+    end
+    return nil
+end
+
+local function pvpMakeArrow()
+    local a = { state = "idle", t = 0, ang = 0, r = 70, fromR = 70,
+                color = THREAT_COL[1], level = 1, dist = 0, name = "" }
+    if HasDrawing then
+        a.tri = Drawing.new("Triangle")
+        a.tri.Visible = false
+        a.tri.Filled = true
+        a.tri.Thickness = 1
+        a.label = Drawing.new("Text")
+        a.label.Visible = false
+        a.label.Size = 12
+        a.label.Center = true
+        a.label.Outline = true
+    end
+    return a
+end
+
+local function pvpThreatScan()
+    local res = {}
+    if not PVP.BehindWarn then return res end
+    local now = os.clock()
+    if PVP.BehindCombatOnly then
+        local inCombat = (now - lastHurtT < 6) or (PVP.Aimbot and pvpAimingNow)
+        if not inCombat then return res end
+    end
+    local myHRP = pvpMyHRP()
+    if not myHRP then return res end
+    local camPos = pvpCamera.CFrame.Position
+    local look = pvpCamera.CFrame.LookVector
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= Player and not pvpSameTeam(plr) and not pvpIsFriendly(plr) then
+            local char = plr.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local toT = hrp.Position - camPos
+                local dist = toT.Magnitude
+                if dist <= PVP.BehindDist and dist > 1 and toT.Unit:Dot(look) < -0.5 then
+                    local blocked = pvpWallBetween(hrp.Position, char, hum)
+                    if PVP.BehindXray or not blocked then
+                        local hasTool = char:FindFirstChildOfClass("Tool") ~= nil
+                        local dMe = (myHRP.Position - hrp.Position).Unit
+                        local lookingAtMe = hrp.CFrame.LookVector:Dot(dMe) > 0.4
+                        local rushing = hrp.AssemblyLinearVelocity:Dot(dMe) > 8
+                        local level = 1
+                        if hasTool and (dist < 30 or lookingAtMe or rushing or plr == lastAttacker) then
+                            level = 3
+                        elseif hasTool then
+                            level = 2
+                        end
+                        local o = pvpCamera.CFrame:PointToObjectSpace(hrp.Position)
+                        local ang = math.atan2(o.X, -o.Z)
+                        table.insert(res, { plr = plr, dist = dist, level = level, ang = ang })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(res, function(a, b) return a.dist < b.dist end)
+    while #res > PVP.BehindMax do table.remove(res) end
+    return res
+end
+
+local function pvpUpdateBehind(dt, now)
+    if not HasDrawing then return end
+    local vs = pvpCamera.ViewportSize
+    local cx, cy = vs.X / 2, vs.Y / 2
+    local edgeR = math.max(vs.X, vs.Y) * 0.75
+    local orbitR = 72
+    behindScanT = behindScanT + dt
+    if behindScanT >= 0.15 then
+        behindScanT = 0
+        local seen = {}
+        for _, th in ipairs(pvpThreatScan()) do
+            seen[th.plr] = true
+            local a = pvpGetBehindArrow(th.plr)
+            if not a then
+                if (behindCd[th.plr] or 0) <= now then
+                    a = pvpMakeArrow()
+                    a.plr = th.plr
+                    a.state = "flyin"
+                    a.t = 0
+                    a.ang = th.ang
+                    a.level = th.level
+                    a.dist = th.dist
+                    a.color = THREAT_COL[th.level] or THREAT_COL[1]
+                    local dn = th.plr.DisplayName
+                    a.name = (dn and dn ~= th.plr.Name) and (dn .. " (@" .. th.plr.Name .. ")") or th.plr.Name
+                    a.fromR = edgeR
+                    a.r = edgeR
+                    table.insert(behindArrows, a)
+                end
+            else
+                if a.state == "flyout" then a.state = "on" a.t = 0 end
+                a.ang = th.ang
+                a.dist = th.dist
+                a.level = th.level
+            end
+        end
+        for _, a in ipairs(behindArrows) do
+            if not seen[a.plr] and a.state ~= "flyout" and a.state ~= "idle" then
+                a.state = "flyout"
+                a.t = 0
+                a.fromR = a.r
+                behindCd[a.plr] = now + 0.5
+            end
+        end
+    end
+    for i = #behindArrows, 1, -1 do
+        local a = behindArrows[i]
+        local wantCol = THREAT_COL[a.level] or THREAT_COL[1]
+        a.color = a.color:Lerp(wantCol, math.min(1, dt * 7)) -- doi mau muot
+        local gone = false
+        if a.state == "flyin" then
+            a.t = a.t + dt / 0.28
+            local k = math.min(1, a.t)
+            local e = 1 - (1 - k) * (1 - k)
+            a.r = a.fromR + (orbitR - a.fromR) * e
+            if k >= 1 then a.state = "on" end
+        elseif a.state == "flyout" then
+            a.t = a.t + dt / 0.25
+            local k = math.min(1, a.t)
+            a.r = a.fromR + (edgeR - a.fromR) * k
+            if k >= 1 then gone = true end
+        else
+            a.r = orbitR
+        end
+        if gone then
+            if a.tri then a.tri.Visible = false end
+            if a.label then a.label.Visible = false end
+            table.remove(behindArrows, i)
+        elseif PVP.BehindWarn then
+            local pulse = 1
+            if a.level == 3 then pulse = 1 + 0.12 * math.sin(now * 10) end
+            local rr = a.r * pulse
+            local px = cx + rr * math.sin(a.ang)
+            local py = cy - rr * math.cos(a.ang)
+            local s, c = math.sin(a.ang), math.cos(a.ang)
+            local ps, pc = math.sin(a.ang + math.pi / 2), math.cos(a.ang + math.pi / 2)
+            if a.tri then
+                a.tri.Visible = true
+                a.tri.PointA = Vector2.new(px + 15 * s * pulse, py - 15 * c * pulse)
+                a.tri.PointB = Vector2.new(px + 7 * ps, py - 7 * pc)
+                a.tri.PointC = Vector2.new(px - 7 * ps, py + 7 * pc)
+                a.tri.Color = a.color
+            end
+            if a.label then
+                a.label.Visible = true
+                a.label.Position = Vector2.new(px, py + 20)
+                a.label.Text = a.name .. " - " .. math.floor(a.dist) .. "m"
+                a.label.Color = a.color
+            end
+        else
+            if a.tri then a.tri.Visible = false end
+            if a.label then a.label.Visible = false end
+        end
+    end
+end
+
 local npcRefreshT, hitboxT = 0, 0
 local pvpConn = RunService.RenderStepped:Connect(function(dt)
     if not sessionAlive() then return end
@@ -776,12 +1165,20 @@ local pvpConn = RunService.RenderStepped:Connect(function(dt)
             fovCircle.Radius = PVP.AimFOV
         end
     end
+    pvpAimingNow = false
     if PVP.Aimbot then
         local okT, target = pcall(pvpGetTarget)
         if okT and target then
+            pvpAimingNow = true
+            if PVP.LegitAim then pcall(pvpLegitTrack, target.pos) end
             pcall(pvpApplyAim, target)
         end
     end
+    -- damage check + POV crosshair + mui ten sau lung (chay ca khi tat aimbot)
+    pcall(pvpDamageCheck)
+    local nowBk = os.clock()
+    pcall(pvpUpdatePOV, dt or 0.016, nowBk, pvpAimingNow)
+    pcall(pvpUpdateBehind, dt or 0.016, nowBk)
     if PVP.ESP then
         pcall(pvpUpdateESP)
     else
@@ -1005,6 +1402,57 @@ local function buildGui()
     })
     MainTab:CreateLabel("Muc tieu aim: chon NPC / Tat ca o dropdown tren.")
 
+    MainTab:CreateSection("Tam ngam POV + Canh bao sau lung")
+    MainTab:CreateToggle({
+        Name = "Tam ngam POV (trang/xanh/do)",
+        CurrentValue = PVP.POVCross,
+        Flag = "PvpPOVCross",
+        Callback = function(v) PVP.POVCross = v end,
+    })
+    MainTab:CreateToggle({
+        Name = "Legit Aim (aim nhu nguoi)",
+        CurrentValue = PVP.LegitAim,
+        Flag = "PvpLegitAim",
+        Callback = function(v)
+            PVP.LegitAim = v
+            if v then
+                PVP.AimMode = "Smooth"
+                setStatus("Legit Aim BAT (khoa ve Smooth)")
+            else
+                setStatus("Legit Aim TAT")
+            end
+        end,
+    })
+    MainTab:CreateToggle({
+        Name = "Canh bao sau lung",
+        CurrentValue = PVP.BehindWarn,
+        Flag = "PvpBehindWarn",
+        Callback = function(v)
+            PVP.BehindWarn = v
+            setStatus(v and "Canh bao sau lung BAT" or "Canh bao sau lung TAT")
+        end,
+    })
+    MainTab:CreateSlider({
+        Name = "Khoang cach quet sau lung",
+        Range = { 20, 150 },
+        Increment = 5,
+        CurrentValue = PVP.BehindDist,
+        Flag = "PvpBehindDist",
+        Callback = function(v) PVP.BehindDist = math.floor(v) end,
+    })
+    MainTab:CreateToggle({
+        Name = "Xuyen tuong (bao ca khi co tuong)",
+        CurrentValue = PVP.BehindXray,
+        Flag = "PvpBehindXray",
+        Callback = function(v) PVP.BehindXray = v end,
+    })
+    MainTab:CreateToggle({
+        Name = "Chi bao khi combat",
+        CurrentValue = PVP.BehindCombatOnly,
+        Flag = "PvpBehindCombatOnly",
+        Callback = function(v) PVP.BehindCombatOnly = v end,
+    })
+
     MainTab:CreateSection("Hitbox (0 = tat)")
     MainTab:CreateSlider({
         Name = "Hitbox nguoi choi dich",
@@ -1074,6 +1522,9 @@ function M.Stop()
     PVP.ESPNPC = false
     PVP.HitboxPlayer = 0
     PVP.HitboxNPC = 0
+    PVP.BehindWarn = false
+    PVP.POVCross = false
+    PVP.LegitAim = false
     pcall(pvpRestoreAllHitbox)
     if pvpConn then
         pcall(function() pvpConn:Disconnect() end)
@@ -1082,6 +1533,18 @@ function M.Stop()
         pcall(function() fovCircle:Remove() end)
         fovCircle = nil
     end
+    for _, l in ipairs({ povT, povB, povL, povR }) do
+        if l then pcall(function() l:Remove() end) end
+    end
+    povT, povB, povL, povR = nil, nil, nil, nil
+    for _, l in ipairs(dmgRays) do
+        pcall(function() l:Remove() end)
+    end
+    for _, a in ipairs(behindArrows) do
+        if a.tri then pcall(function() a.tri:Remove() end) end
+        if a.label then pcall(function() a.label:Remove() end) end
+    end
+    behindArrows = {}
     for _, e in pairs(espCache) do
         pvpDestroyESP(e)
     end
